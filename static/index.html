@@ -50,19 +50,6 @@
     border-color: #1976d2;
   }
 
-  /* --- Packing action row (import/template) --- */
-  .pack-actions {
-    display: flex; gap: 8px; align-items: center;
-    padding: 8px 0 4px;
-    font-size: 0.85em;
-  }
-  .pack-actions .link-btn {
-    background: none; border: none; color: #1976d2;
-    cursor: pointer; padding: 0; font-size: inherit;
-  }
-  .pack-actions .link-btn:hover { text-decoration: underline; }
-  .pack-actions .sep { color: #ccc; }
-
   /* --- Filter bar (Packing) --- */
   .filter-bar {
     position: sticky; top: 60px; z-index: 8;
@@ -251,12 +238,6 @@
 
 <!-- Packing tab content -->
 <div id="view-packing" style="display:none;">
-  <div class="pack-actions">
-    <input type="file" id="pImportFile" accept=".csv,text/csv" style="display:none" onchange="onImportFile(event)">
-    <button class="link-btn" onclick="document.getElementById('pImportFile').click()">Import CSV</button>
-    <span class="sep">·</span>
-    <button class="link-btn" onclick="downloadCSVTemplate()">Download template</button>
-  </div>
   <div class="filter-bar">
     <input type="text" id="pSearch" placeholder="Search packing items…" oninput="renderPacking()">
     <div class="filter-row">
@@ -910,114 +891,6 @@ async function submitPackForm() {
 document.getElementById('packFormOverlay').addEventListener('click', e => {
   if (e.target === e.currentTarget) closePackForm();
 });
-
-// --- CSV import ---
-// Robust CSV parser per RFC 4180: handles quoted fields, embedded commas,
-// escaped quotes (""), CRLF, trailing blank lines.
-function parseCSV(text) {
-  const rows = [];
-  let row = [];
-  let field = '';
-  let inQuotes = false;
-  let i = 0;
-  while (i < text.length) {
-    const c = text[i];
-    if (inQuotes) {
-      if (c === '"') {
-        if (text[i+1] === '"') { field += '"'; i += 2; continue; }
-        inQuotes = false; i++; continue;
-      }
-      field += c; i++;
-    } else {
-      if (c === '"') { inQuotes = true; i++; continue; }
-      if (c === ',') { row.push(field); field = ''; i++; continue; }
-      if (c === '\r') { i++; continue; }
-      if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; i++; continue; }
-      field += c; i++;
-    }
-  }
-  if (field.length > 0 || row.length > 0) {
-    row.push(field); rows.push(row);
-  }
-  return rows;
-}
-
-function downloadCSVTemplate() {
-  const text =
-    'title,status,bag,priority\n' +
-    'Sunscreen,Need,Orange Suitcase,1\n' +
-    'Passport,Have,Black Tote,\n' +
-    'Snorkel,packed,Green Suitcase,3\n';
-  const blob = new Blob([text], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = 'packing_template.csv';
-  document.body.appendChild(a); a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-async function onImportFile(event) {
-  const file = event.target.files[0];
-  event.target.value = '';  // allow re-importing same filename later
-  if (!file) return;
-  let text;
-  try {
-    text = await file.text();
-  } catch (e) {
-    alert('Could not read file: ' + e.message);
-    return;
-  }
-  const rows = parseCSV(text);
-  if (!rows.length) { alert('CSV looks empty.'); return; }
-  const header = rows[0].map(h => h.trim().toLowerCase());
-  const required = ['title', 'bag'];
-  const missing = required.filter(c => !header.includes(c));
-  if (missing.length) {
-    alert('CSV missing required column(s): ' + missing.join(', ') +
-          '\nExpected columns: title, status, bag, priority');
-    return;
-  }
-
-  const items = [];
-  for (let i = 1; i < rows.length; i++) {
-    const r = rows[i];
-    if (!r.some(c => c && c.trim())) continue;  // skip blank lines
-    const item = {};
-    header.forEach((h, idx) => {
-      const v = (r[idx] != null ? r[idx] : '').trim();
-      if (v !== '') item[h] = v;
-    });
-    items.push(item);
-  }
-  if (!items.length) { alert('No data rows found in CSV.'); return; }
-
-  if (!confirm(`Import ${items.length} item${items.length === 1 ? '' : 's'} from CSV?`)) return;
-
-  let result;
-  try {
-    const res = await fetch(API + '/packing/items/bulk', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items }),
-    });
-    result = await res.json();
-  } catch (e) {
-    alert('Upload failed: ' + e.message);
-    return;
-  }
-
-  let msg = `Imported ${result.added} item${result.added === 1 ? '' : 's'}.`;
-  if (result.skipped) {
-    const lines = result.errors.slice(0, 10).map(e => `  row ${e.row}: ${e.error}`);
-    msg += `\nSkipped ${result.skipped}:\n` + lines.join('\n');
-    if (result.errors.length > 10) {
-      msg += `\n  …and ${result.errors.length - 10} more.`;
-    }
-  }
-  alert(msg);
-  await loadPacking();
-}
 
 // --- Initial load ---
 switchTab(activeTab);
