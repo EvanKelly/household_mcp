@@ -27,9 +27,10 @@ from server import (
     _now_iso,
     _sort_tasks,
     _canonical_status,
+    _parse_scheduled_days,
     mcp,
-    CADENCE_DAYS,
-    VALID_CADENCES,
+    VALID_CADENCE_UNITS,
+    DAY_NAMES,
     PACKING_STATUSES,
     PACKING_NEXT_STATUS,
 )
@@ -59,25 +60,38 @@ async def api_list_tasks(request: Request) -> JSONResponse:
 async def api_add_task(request: Request) -> JSONResponse:
     body = await request.json()
     title = body.get("title", "").strip()
-    cadence = body.get("cadence", "once").lower().strip()
+    cadence_value = body.get("cadence_value")
+    cadence_unit = body.get("cadence_unit")
     notes = body.get("notes")
     due_date = body.get("due_date")
 
     if not title:
         return JSONResponse({"error": "title is required"}, status_code=400)
-    if cadence not in VALID_CADENCES:
-        return JSONResponse({"error": f"cadence must be one of: {', '.join(VALID_CADENCES)}"}, status_code=400)
 
-    db_cadence = None if cadence == "once" else cadence
-    # due_date only applies to one-time tasks
-    db_due_date = due_date if db_cadence is None else None
+    is_recurring = cadence_value is not None
+    if is_recurring:
+        if cadence_unit not in VALID_CADENCE_UNITS:
+            return JSONResponse({"error": f"cadence_unit must be one of: {', '.join(VALID_CADENCE_UNITS)}"}, status_code=400)
+        try:
+            cadence_value = int(cadence_value)
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "cadence_value must be an integer"}, status_code=400)
+        if cadence_value < 1:
+            return JSONResponse({"error": "cadence_value must be 1 or greater"}, status_code=400)
+
+    scheduled_days_raw = body.get("scheduled_days") or None
+    if scheduled_days_raw and is_recurring:
+        if not _parse_scheduled_days(scheduled_days_raw):
+            return JSONResponse({"error": f"scheduled_days must use full names from: {', '.join(DAY_NAMES)}"}, status_code=400)
+    db_scheduled = scheduled_days_raw if is_recurring else None
+    db_due_date = due_date if not is_recurring else None
     task_id = str(uuid.uuid4())[:8]
     conn = _get_db()
-    max_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM tasks WHERE cadence IS NULL").fetchone()[0]
-    sort_order = max_order + 1 if db_cadence is None else 0
+    max_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM tasks WHERE cadence_value IS NULL").fetchone()[0]
+    sort_order = max_order + 1 if not is_recurring else 0
     conn.execute(
-        "INSERT INTO tasks (id, title, cadence, notes, sort_order, due_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (task_id, title, db_cadence, notes, sort_order, db_due_date, _now_iso()),
+        "INSERT INTO tasks (id, title, cadence_value, cadence_unit, scheduled_days, notes, sort_order, due_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (task_id, title, cadence_value, cadence_unit, db_scheduled, notes, sort_order, db_due_date, _now_iso()),
     )
     conn.commit()
     conn.close()
@@ -96,16 +110,39 @@ async def api_edit_task(request: Request) -> JSONResponse:
 
     updates = []
     values = []
-    for field in ("title", "cadence", "notes"):
-        if field in body and body[field] is not None:
-            val = body[field].strip() if isinstance(body[field], str) else body[field]
-            if field == "cadence":
-                if val not in VALID_CADENCES:
-                    conn.close()
-                    return JSONResponse({"error": f"cadence must be one of: {', '.join(VALID_CADENCES)}"}, status_code=400)
-                val = None if val == "once" else val
-            updates.append(f"{field} = ?")
-            values.append(val)
+    if "title" in body and body["title"] is not None:
+        updates.append("title = ?")
+        values.append(body["title"].strip())
+    if "notes" in body and body["notes"] is not None:
+        updates.append("notes = ?")
+        values.append(body["notes"])
+
+    # Cadence update: clear (cadence_value=null) or set new value+unit
+    if "cadence_value" in body:
+        cv = body["cadence_value"]
+        cu = body.get("cadence_unit")
+        if cv is None:
+            updates += ["cadence_value = ?", "cadence_unit = ?"]
+            values += [None, None]
+        else:
+            if cu not in VALID_CADENCE_UNITS:
+                conn.close()
+                return JSONResponse({"error": f"cadence_unit must be one of: {', '.join(VALID_CADENCE_UNITS)}"}, status_code=400)
+            try:
+                cv = int(cv)
+            except (TypeError, ValueError):
+                conn.close()
+                return JSONResponse({"error": "cadence_value must be an integer"}, status_code=400)
+            updates += ["cadence_value = ?", "cadence_unit = ?"]
+            values += [cv, cu]
+
+    if "scheduled_days" in body:
+        sd = body["scheduled_days"] or None
+        if sd and not _parse_scheduled_days(sd):
+            conn.close()
+            return JSONResponse({"error": f"scheduled_days must use full names from: {', '.join(DAY_NAMES)}"}, status_code=400)
+        updates.append("scheduled_days = ?")
+        values.append(sd)
 
     # Handle due_date separately (can be null/empty to clear)
     if "due_date" in body:
@@ -131,7 +168,17 @@ async def api_complete_task(request: Request) -> JSONResponse:
         conn.close()
         return JSONResponse({"error": "not found"}, status_code=404)
 
-    conn.execute("UPDATE tasks SET last_completed = ? WHERE id = ?", (_now_iso(), task_id))
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    completed_by = body.get("completed_by") or None
+
+    conn.execute(
+        "UPDATE tasks SET last_completed = ?, completed_by = ? WHERE id = ?",
+        (_now_iso(), completed_by, task_id),
+    )
     conn.commit()
     conn.close()
     return JSONResponse({"ok": True})

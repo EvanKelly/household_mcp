@@ -18,13 +18,27 @@ mcp = FastMCP("household")
 # ---------------------------------------------------------------------------
 DB_PATH = os.environ.get("HOUSEHOLD_DB_PATH", "household.db")
 
-CADENCE_DAYS = {
-    "weekly": 7,
-    "monthly": 30,
-    "quarterly": 90,
-}
+VALID_CADENCE_UNITS = ["days", "weeks", "months"]
+UNIT_DAYS = {"days": 1, "weeks": 7, "months": 30}
 
-VALID_CADENCES = list(CADENCE_DAYS.keys()) + ["once"]
+DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+DAY_NUMBER = {name: i for i, name in enumerate(DAY_NAMES)}  # Monday=0 … Sunday=6
+
+
+def _parse_scheduled_days(raw: str | None) -> set[int]:
+    """Parse 'Monday,Thursday' → {0, 3}. Returns empty set for None/invalid."""
+    if not raw:
+        return set()
+    return {DAY_NUMBER[d.strip()] for d in raw.split(",") if d.strip() in DAY_NUMBER}
+
+
+def _cadence_days(row) -> int | None:
+    """Return how many days this cadence represents, or None for one-time tasks."""
+    value = row["cadence_value"] if hasattr(row, "keys") else row.get("cadence_value")
+    unit = row["cadence_unit"] if hasattr(row, "keys") else row.get("cadence_unit")
+    if value is None or unit is None:
+        return None
+    return int(value) * UNIT_DAYS[unit]
 
 
 def _get_db() -> sqlite3.Connection:
@@ -64,24 +78,52 @@ def _init_db() -> None:
         CREATE TABLE IF NOT EXISTS tasks (
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
-            cadence TEXT CHECK(cadence IN ('weekly', 'monthly', 'quarterly') OR cadence IS NULL),
+            cadence_value INTEGER,
+            cadence_unit TEXT CHECK(cadence_unit IN ('days', 'weeks', 'months') OR cadence_unit IS NULL),
+            scheduled_days TEXT,
             notes TEXT,
             last_completed TEXT,
+            completed_by TEXT,
             sort_order INTEGER NOT NULL DEFAULT 0,
             due_date TEXT,
             created_at TEXT NOT NULL
         )
     """)
-    # Migration: add sort_order if missing (existing DBs)
-    try:
-        conn.execute("ALTER TABLE tasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass  # column already exists
-    # Migration: add due_date if missing (existing DBs)
-    try:
-        conn.execute("ALTER TABLE tasks ADD COLUMN due_date TEXT")
-    except sqlite3.OperationalError:
-        pass  # column already exists
+    # Migration: old fixed cadence column → cadence_value + cadence_unit
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    if "cadence" in cols:
+        for col_def in ("cadence_value INTEGER", "cadence_unit TEXT"):
+            try:
+                conn.execute(f"ALTER TABLE tasks ADD COLUMN {col_def}")
+            except sqlite3.OperationalError:
+                pass
+        conn.execute("""
+            UPDATE tasks SET
+                cadence_value = CASE cadence
+                    WHEN 'weekly'    THEN 1
+                    WHEN 'monthly'   THEN 1
+                    WHEN 'quarterly' THEN 3
+                END,
+                cadence_unit = CASE cadence
+                    WHEN 'weekly'    THEN 'weeks'
+                    WHEN 'monthly'   THEN 'months'
+                    WHEN 'quarterly' THEN 'months'
+                END
+            WHERE cadence IS NOT NULL AND cadence_value IS NULL
+        """)
+    # Migration: add remaining columns if missing (older DBs)
+    for col_def in (
+        "sort_order INTEGER NOT NULL DEFAULT 0",
+        "due_date TEXT",
+        "completed_by TEXT",
+        "cadence_value INTEGER",
+        "cadence_unit TEXT",
+        "scheduled_days TEXT",
+    ):
+        try:
+            conn.execute(f"ALTER TABLE tasks ADD COLUMN {col_def}")
+        except sqlite3.OperationalError:
+            pass
 
     # Packing list tables
     conn.execute("""
@@ -181,33 +223,70 @@ def _now_iso() -> str:
 
 
 def _task_status(row: sqlite3.Row) -> str:
-    if row["cadence"] is None:
-        # One-time task: complete once done, to do otherwise
+    days = _cadence_days(row)
+    if days is None:
         return "Complete" if row["last_completed"] else "To Do"
+
+    scheduled = _parse_scheduled_days(row["scheduled_days"])
+    now = datetime.now(timezone.utc)
+
+    if scheduled:
+        # Find the most recent scheduled weekday that falls within the cadence window.
+        most_recent_due = None
+        for delta in range(days + 1):
+            candidate = now - timedelta(days=delta)
+            if candidate.weekday() in scheduled:
+                most_recent_due = candidate
+                break
+        if most_recent_due is None:
+            return "To Do"
+        if not row["last_completed"]:
+            return "To Do"
+        last = datetime.fromisoformat(row["last_completed"])
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return "Complete" if last.date() >= most_recent_due.date() else "To Do"
+
+    # No scheduled days — plain time-based check.
     if row["last_completed"] is None:
         return "To Do"
     last = datetime.fromisoformat(row["last_completed"])
     if last.tzinfo is None:
         last = last.replace(tzinfo=timezone.utc)
-    threshold = datetime.now(timezone.utc) - timedelta(days=CADENCE_DAYS[row["cadence"]])
+    threshold = now - timedelta(days=days)
     return "Complete" if last >= threshold else "To Do"
 
 
-def _is_recurring(row) -> bool:
-    """Check if a task (row or dict) is recurring."""
-    cadence = row["cadence"] if hasattr(row, "keys") else row.get("cadence")
-    return cadence is not None
+def _cadence_label(cadence_value, cadence_unit, scheduled_days=None) -> str:
+    """Human-readable cadence string, e.g. 'every 3 days' or 'every Monday'."""
+    if cadence_value is None or cadence_unit is None:
+        return "once"
+    if scheduled_days:
+        short = " & ".join(d[:3] for d in scheduled_days.split(",") if d.strip())
+        if cadence_value == 1 and cadence_unit == "weeks":
+            return f"every {short}"
+        unit = cadence_unit.rstrip("s") if cadence_value == 1 else cadence_unit
+        return f"every {cadence_value} {unit} on {short}"
+    unit = cadence_unit.rstrip("s") if cadence_value == 1 else cadence_unit
+    return f"every {cadence_value} {unit}"
 
 
 def _format_task(row: sqlite3.Row) -> dict:
     status = _task_status(row)
+    cadence_value = int(row["cadence_value"]) if row["cadence_value"] is not None else None
+    cadence_unit = row["cadence_unit"]
+    scheduled_days = row["scheduled_days"]
     return {
         "id": row["id"],
         "title": row["title"],
-        "cadence": row["cadence"] or "once",
+        "cadence": _cadence_label(cadence_value, cadence_unit, scheduled_days),
+        "cadence_value": cadence_value,
+        "cadence_unit": cadence_unit,
+        "scheduled_days": scheduled_days,
         "notes": row["notes"] or "",
         "status": status,
         "last_completed": row["last_completed"],
+        "completed_by": row["completed_by"],
         "sort_order": row["sort_order"],
         "due_date": row["due_date"],
         "created_at": row["created_at"],
@@ -219,9 +298,8 @@ def _sort_tasks(tasks: list[dict]) -> list[dict]:
     Recurring sorted by title; one-time sorted by sort_order."""
     def sort_key(t):
         status_ord = 0 if t["status"] == "To Do" else 1
-        recurring_ord = 0 if t["cadence"] != "once" else 1
-        # Recurring: alphabetical. One-time: by sort_order.
-        order = t["title"].lower() if t["cadence"] != "once" else str(t["sort_order"]).zfill(10)
+        recurring_ord = 0 if t["cadence_value"] is not None else 1
+        order = t["title"].lower() if t["cadence_value"] is not None else str(t["sort_order"]).zfill(10)
         return (status_ord, recurring_ord, order)
     return sorted(tasks, key=sort_key)
 
@@ -252,68 +330,84 @@ def list_tasks() -> str:
             current_status = t["status"]
             lines.append(f"\n## {current_status}")
         notes_bit = f" — {t['notes']}" if t["notes"] else ""
-        completed_bit = f" (last: {t['last_completed'][:10]})" if t["last_completed"] else ""
+        by_bit = f" by {t['completed_by']}" if t.get("completed_by") else ""
+        completed_bit = f" (last: {t['last_completed'][:10]}{by_bit})" if t["last_completed"] else ""
         due_bit = f" (due: {t['due_date']})" if t.get("due_date") else ""
-        lines.append(f"- **{t['title']}** [{t['cadence']}]{completed_bit}{due_bit}{notes_bit}")
+        cadence_display = t["cadence"]
+        lines.append(f"- **{t['title']}** [{cadence_display}]{completed_bit}{due_bit}{notes_bit}")
         lines.append(f"  id: `{t['id']}`")
 
     return "\n".join(lines)
 
 
 @mcp.tool()
-def add_task(title: str, cadence: str = "once", notes: Optional[str] = None, due_date: Optional[str] = None) -> str:
+def add_task(
+    title: str,
+    cadence_value: Optional[int] = None,
+    cadence_unit: Optional[str] = None,
+    scheduled_days: Optional[str] = None,
+    notes: Optional[str] = None,
+    due_date: Optional[str] = None,
+) -> str:
     """Add a new household task.
 
     Args:
         title: Name of the task (e.g. "Clean gutters")
-        cadence: How often — one of: weekly, monthly, quarterly, once. Defaults to once.
+        cadence_value: How many units between repetitions (e.g. 2 for "every 2 weeks"). Omit for one-time tasks.
+        cadence_unit: Unit of repetition — one of: days, weeks, months. Required if cadence_value is set.
+        scheduled_days: Optional comma-separated days of week (e.g. "Monday" or "Monday,Thursday"). Only for repeating tasks.
         notes: Optional free text notes about the task
         due_date: Optional due date for one-time tasks (YYYY-MM-DD format)
     """
-    cadence = cadence.lower().strip()
-    if cadence not in VALID_CADENCES:
-        return f"Invalid cadence '{cadence}'. Must be one of: {', '.join(VALID_CADENCES)}."
-
-    db_cadence = None if cadence == "once" else cadence
-    # due_date only applies to one-time tasks
-    db_due_date = due_date if db_cadence is None else None
+    is_recurring = cadence_value is not None
+    if is_recurring:
+        if cadence_unit not in VALID_CADENCE_UNITS:
+            return f"Invalid cadence_unit '{cadence_unit}'. Must be one of: {', '.join(VALID_CADENCE_UNITS)}."
+        if cadence_value < 1:
+            return "cadence_value must be 1 or greater."
+    db_scheduled = scheduled_days if is_recurring else None
+    if db_scheduled and not _parse_scheduled_days(db_scheduled):
+        return f"Invalid scheduled_days '{db_scheduled}'. Use full day names, e.g. 'Monday,Thursday'."
+    db_due_date = due_date if not is_recurring else None
     task_id = str(uuid.uuid4())[:8]
     conn = _get_db()
-    # For one-time tasks, put at end of sort order
-    max_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM tasks WHERE cadence IS NULL").fetchone()[0]
-    sort_order = max_order + 1 if db_cadence is None else 0
+    max_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM tasks WHERE cadence_value IS NULL").fetchone()[0]
+    sort_order = max_order + 1 if not is_recurring else 0
     conn.execute(
-        "INSERT INTO tasks (id, title, cadence, notes, sort_order, due_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (task_id, title.strip(), db_cadence, notes, sort_order, db_due_date, _now_iso()),
+        "INSERT INTO tasks (id, title, cadence_value, cadence_unit, scheduled_days, notes, sort_order, due_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (task_id, title.strip(), cadence_value, cadence_unit, db_scheduled, notes, sort_order, db_due_date, _now_iso()),
     )
     conn.commit()
     conn.close()
+    label = _cadence_label(cadence_value, cadence_unit, db_scheduled)
     due_bit = f", due: {db_due_date}" if db_due_date else ""
-    return f"Added task '{title}' ({cadence}{due_bit}). ID: {task_id}"
+    return f"Added task '{title}' ({label}{due_bit}). ID: {task_id}"
 
 
 @mcp.tool()
 def edit_task(
     task_id: str,
     title: Optional[str] = None,
-    cadence: Optional[str] = None,
+    cadence_value: Optional[int] = None,
+    cadence_unit: Optional[str] = None,
+    scheduled_days: Optional[str] = None,
     notes: Optional[str] = None,
     due_date: Optional[str] = None,
 ) -> str:
     """Edit an existing task. Only provided fields are updated.
 
+    To make a task one-time (remove recurrence), pass cadence_value=0.
+    To clear scheduled days, pass scheduled_days=''.
+
     Args:
         task_id: The task ID (use list_tasks to find it)
         title: New title
-        cadence: New cadence — one of: weekly, monthly, quarterly, once
+        cadence_value: New repetition interval (e.g. 2). Pass 0 to make it one-time.
+        cadence_unit: New unit — one of: days, weeks, months
+        scheduled_days: Comma-separated days of week (e.g. 'Monday') or '' to clear
         notes: New notes (free text)
         due_date: Due date for one-time tasks (YYYY-MM-DD format, or empty string to clear)
     """
-    if cadence is not None:
-        cadence = cadence.lower().strip()
-        if cadence not in VALID_CADENCES:
-            return f"Invalid cadence '{cadence}'. Must be one of: {', '.join(VALID_CADENCES)}."
-
     conn = _get_db()
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     if not row:
@@ -325,20 +419,37 @@ def edit_task(
     if title is not None:
         updates.append("title = ?")
         values.append(title.strip())
-    if cadence is not None:
-        updates.append("cadence = ?")
-        values.append(None if cadence == "once" else cadence)
+    if cadence_value is not None:
+        if cadence_value == 0:
+            updates += ["cadence_value = ?", "cadence_unit = ?"]
+            values += [None, None]
+        else:
+            if cadence_unit not in VALID_CADENCE_UNITS:
+                conn.close()
+                return f"Invalid cadence_unit '{cadence_unit}'. Must be one of: {', '.join(VALID_CADENCE_UNITS)}."
+            updates += ["cadence_value = ?", "cadence_unit = ?"]
+            values += [cadence_value, cadence_unit]
+    if scheduled_days is not None:
+        if scheduled_days == "":
+            updates.append("scheduled_days = ?")
+            values.append(None)
+        else:
+            parsed = _parse_scheduled_days(scheduled_days)
+            if not parsed:
+                conn.close()
+                return f"Invalid scheduled_days '{scheduled_days}'. Use full day names, e.g. 'Monday,Thursday'."
+            updates.append("scheduled_days = ?")
+            values.append(scheduled_days)
     if notes is not None:
         updates.append("notes = ?")
         values.append(notes)
     if due_date is not None:
         updates.append("due_date = ?")
-        # Empty string clears the due date
         values.append(due_date if due_date else None)
 
     if not updates:
         conn.close()
-        return "Nothing to update — provide at least one of: title, cadence, notes, due_date."
+        return "Nothing to update — provide at least one of: title, cadence_value/cadence_unit, scheduled_days, notes, due_date."
 
     values.append(task_id)
     conn.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?", values)
@@ -352,7 +463,7 @@ def edit_task(
 
 
 @mcp.tool()
-def complete_task(task_id: str) -> str:
+def complete_task(task_id: str, completed_by: Optional[str] = None) -> str:
     """Mark a task as complete. Sets last_completed to now.
 
     For recurring tasks, it will move back to To Do after the cadence period.
@@ -360,6 +471,7 @@ def complete_task(task_id: str) -> str:
 
     Args:
         task_id: The task ID (use list_tasks to find it)
+        completed_by: Who completed the task (e.g. "Evan" or "Emily")
     """
     conn = _get_db()
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -368,13 +480,17 @@ def complete_task(task_id: str) -> str:
         return f"No task found with ID '{task_id}'."
 
     now = _now_iso()
-    conn.execute("UPDATE tasks SET last_completed = ? WHERE id = ?", (now, task_id))
+    conn.execute(
+        "UPDATE tasks SET last_completed = ?, completed_by = ? WHERE id = ?",
+        (now, completed_by, task_id),
+    )
     conn.commit()
     conn.close()
 
+    by_bit = f" (by {completed_by})" if completed_by else ""
     if row["cadence"] is None:
-        return f"Completed '{row['title']}' (one-time task — done!)."
-    return f"Completed '{row['title']}'. It'll move back to To Do after one {row['cadence']} cycle."
+        return f"Completed '{row['title']}'{by_bit} (one-time task — done!)."
+    return f"Completed '{row['title']}'{by_bit}. It'll move back to To Do after one {row['cadence']} cycle."
 
 
 @mcp.tool()

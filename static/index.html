@@ -209,6 +209,25 @@
 
   .empty { text-align: center; color: #999; padding: 40px 0; }
 
+  /* Day-of-week picker */
+  .day-picker { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .day-btn {
+    padding: 6px 10px; border: 1px solid #ccc; border-radius: 20px;
+    background: #fff; color: #555; font-size: 0.82em; font-weight: 600;
+    cursor: pointer; transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .day-btn.selected { background: #1976d2; color: #fff; border-color: #1976d2; }
+
+  /* Who did it? picker */
+  .who-buttons { display: flex; gap: 12px; margin-top: 8px; }
+  .btn-who {
+    flex: 1; padding: 18px 12px; font-size: 1.2em; font-weight: 700;
+    border: 2px solid #1976d2; border-radius: 10px;
+    background: #fff; color: #1976d2; cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .btn-who:hover, .btn-who:active { background: #1976d2; color: #fff; }
+
   .pill {
     display: inline-block; font-size: 0.72em; font-weight: 600;
     padding: 2px 6px; border-radius: 10px; margin-left: 4px;
@@ -224,8 +243,8 @@
 </head>
 <body>
 
-<!-- Tabs -->
-<div class="tabs-bar">
+<!-- Tabs (packing hidden for now) -->
+<div class="tabs-bar" style="display:none">
   <button class="tab-btn active" id="tab-household" onclick="switchTab('household')">Household Tasks</button>
   <button class="tab-btn" id="tab-packing" onclick="switchTab('packing')">Bahamas Packing</button>
 </div>
@@ -259,6 +278,20 @@
   <div id="packingApp"><div class="empty">Loading…</div></div>
 </div>
 
+<!-- Who did it? modal -->
+<div class="form-overlay" id="whoOverlay">
+  <div class="form-box">
+    <h2>Who did it?</h2>
+    <div class="who-buttons">
+      <button class="btn-who" onclick="submitComplete('Evan')">Evan</button>
+      <button class="btn-who" onclick="submitComplete('Emily')">Emily</button>
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-cancel" onclick="closeWhoModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- Floating add button -->
 <button class="fab" onclick="openForm()" title="Add">+</button>
 
@@ -269,13 +302,34 @@
     <input type="hidden" id="editId">
     <label for="fTitle">Title</label>
     <input type="text" id="fTitle" placeholder="e.g. Clean bathroom">
-    <label for="fCadence">Cadence</label>
-    <select id="fCadence">
-      <option value="once">Once</option>
-      <option value="weekly">Weekly</option>
-      <option value="monthly">Monthly</option>
-      <option value="quarterly">Quarterly</option>
+    <label for="fCadenceType">Repeat</label>
+    <select id="fCadenceType" onchange="toggleCadenceInputs()">
+      <option value="once">Once (no repeat)</option>
+      <option value="recurring">Repeating</option>
     </select>
+    <div id="cadenceInputRow" style="display:none; margin-top:8px;">
+      <label>Every</label>
+      <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
+        <input type="number" id="fCadenceValue" min="1" value="1" style="width:72px; padding:8px 10px; border:1px solid #ccc; border-radius:6px; font-size:0.95em;">
+        <select id="fCadenceUnit" style="flex:1; padding:8px 10px; border:1px solid #ccc; border-radius:6px; font-size:0.95em; font-family:inherit;" onchange="toggleDayPicker()">
+          <option value="days">Days</option>
+          <option value="weeks" selected>Weeks</option>
+          <option value="months">Months</option>
+        </select>
+      </div>
+      <div id="scheduledDaysRow" style="margin-top:10px;">
+        <label>On specific days <span style="font-weight:400;color:#888">(optional)</span></label>
+        <div class="day-picker" id="dayPicker">
+          <button type="button" class="day-btn" data-day="Monday">Mon</button>
+          <button type="button" class="day-btn" data-day="Tuesday">Tue</button>
+          <button type="button" class="day-btn" data-day="Wednesday">Wed</button>
+          <button type="button" class="day-btn" data-day="Thursday">Thu</button>
+          <button type="button" class="day-btn" data-day="Friday">Fri</button>
+          <button type="button" class="day-btn" data-day="Saturday">Sat</button>
+          <button type="button" class="day-btn" data-day="Sunday">Sun</button>
+        </div>
+      </div>
+    </div>
     <div id="dueDateRow">
       <label for="fDueDate">Due Date</label>
       <input type="date" id="fDueDate">
@@ -360,10 +414,10 @@ function render(tasks) {
     return;
   }
 
-  const todoRecurring = tasks.filter(t => t.status === 'To Do' && t.cadence !== 'once');
-  const todoOnce = tasks.filter(t => t.status === 'To Do' && t.cadence === 'once');
-  const doneRecurring = tasks.filter(t => t.status === 'Complete' && t.cadence !== 'once');
-  const doneOnce = tasks.filter(t => t.status === 'Complete' && t.cadence === 'once');
+  const todoRecurring = tasks.filter(t => t.status === 'To Do' && t.cadence_value);
+  const todoOnce = tasks.filter(t => t.status === 'To Do' && !t.cadence_value);
+  const doneRecurring = tasks.filter(t => t.status === 'Complete' && t.cadence_value);
+  const doneOnce = tasks.filter(t => t.status === 'Complete' && !t.cadence_value);
 
   let html = '';
 
@@ -395,22 +449,33 @@ function render(tasks) {
   if (dragList) initDrag(dragList);
 }
 
-const CADENCE_DAYS = { weekly: 7, monthly: 30, quarterly: 90 };
+const UNIT_DAYS = { days: 1, weeks: 7, months: 30 };
+// JS: 0=Sun,1=Mon…6=Sat  →  map full day names to JS getDay() values
+const DAY_JS = { Sunday:0, Monday:1, Tuesday:2, Wednesday:3, Thursday:4, Friday:5, Saturday:6 };
 
 function daysOverdue(t) {
   if (t.status !== 'To Do') return null;
-  if (t.cadence === 'once') {
+  if (!t.cadence_value) {
     if (!t.due_date) return null;
     const due = new Date(t.due_date + 'T00:00:00');
-    const now = new Date();
-    const over = Math.floor((now - due) / 86400000);
+    const over = Math.floor((Date.now() - due) / 86400000);
     return over > 0 ? over : null;
   }
+  const cadenceDays = t.cadence_value * UNIT_DAYS[t.cadence_unit];
+  if (t.scheduled_days) {
+    const nums = new Set(t.scheduled_days.split(',').map(d => DAY_JS[d.trim()]));
+    const now = new Date();
+    for (let delta = 0; delta <= cadenceDays; delta++) {
+      const d = new Date(now - delta * 86400000);
+      if (nums.has(d.getDay())) {
+        return delta > 0 ? delta : null; // delta=0 means due today, not overdue
+      }
+    }
+    return null;
+  }
   if (!t.last_completed) return null;
-  const last = new Date(t.last_completed);
-  const now = new Date();
-  const daysSince = Math.floor((now - last) / 86400000);
-  const over = daysSince - CADENCE_DAYS[t.cadence];
+  const daysSince = Math.floor((Date.now() - new Date(t.last_completed)) / 86400000);
+  const over = daysSince - cadenceDays;
   return over > 0 ? over : null;
 }
 
@@ -420,18 +485,20 @@ function taskCard(t, complete) {
   if (t.cadence === 'once') cls += ' once';
   const notes = t.notes ? `<div class="task-notes">${esc(t.notes)}</div>` : '';
   const lastDone = t.last_completed ? t.last_completed.slice(0, 10) : 'never';
+  const byBit = t.completed_by ? ` by ${esc(t.completed_by)}` : '';
+  const isRecurring = !!t.cadence_value;
   const doneBtn = complete ? '' :
     `<button class="btn btn-done" onclick="completeTask('${t.id}')">Done</button>`;
-  const handle = (!complete && t.cadence === 'once')
+  const handle = (!complete && !isRecurring)
     ? '<span class="drag-handle">⠿</span>' : '';
   const overdue = daysOverdue(t);
   const overdueBit = overdue !== null
     ? ` · <span class="overdue">${overdue} day${overdue === 1 ? '' : 's'} overdue</span>` : '';
   let metaText;
-  if (t.cadence === 'once') {
+  if (!isRecurring) {
     metaText = t.due_date ? `due: ${t.due_date}` : 'once';
   } else {
-    metaText = `${t.cadence} · last: ${lastDone}`;
+    metaText = `${esc(t.cadence)} · last: ${lastDone}${byBit}`;
   }
   return `
     <div class="${cls}" data-id="${t.id}">
@@ -548,10 +615,32 @@ function esc(s) {
   return d.innerHTML;
 }
 
-async function completeTask(id) {
-  await fetch(API + '/tasks/' + id + '/complete', { method: 'POST' });
+let pendingCompleteId = null;
+
+function completeTask(id) {
+  pendingCompleteId = id;
+  document.getElementById('whoOverlay').classList.add('open');
+}
+
+async function submitComplete(person) {
+  const id = pendingCompleteId;
+  closeWhoModal();
+  await fetch(API + '/tasks/' + id + '/complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ completed_by: person }),
+  });
   loadTasks();
 }
+
+function closeWhoModal() {
+  document.getElementById('whoOverlay').classList.remove('open');
+  pendingCompleteId = null;
+}
+
+document.getElementById('whoOverlay').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeWhoModal();
+});
 
 async function deleteTask(id, title) {
   if (!confirm('Delete "' + title + '"?')) return;
@@ -559,22 +648,55 @@ async function deleteTask(id, title) {
   loadTasks();
 }
 
-function toggleDueDateRow() {
-  const cadence = document.getElementById('fCadence').value;
-  document.getElementById('dueDateRow').style.display = cadence === 'once' ? '' : 'none';
+function toggleCadenceInputs() {
+  const isRecurring = document.getElementById('fCadenceType').value === 'recurring';
+  document.getElementById('cadenceInputRow').style.display = isRecurring ? '' : 'none';
+  document.getElementById('dueDateRow').style.display = isRecurring ? 'none' : '';
+  if (isRecurring) toggleDayPicker();
 }
 
-document.getElementById('fCadence').addEventListener('change', toggleDueDateRow);
+function toggleDayPicker() {
+  // Day picker is only meaningful for week-based cadences, but we show it for all repeating tasks.
+  // Hide it only for month+ cadences where specific weekdays don't map cleanly.
+  const unit = document.getElementById('fCadenceUnit').value;
+  document.getElementById('scheduledDaysRow').style.display = unit === 'months' ? 'none' : '';
+}
+
+// Wire up day-picker buttons
+document.getElementById('dayPicker').addEventListener('click', e => {
+  const btn = e.target.closest('.day-btn');
+  if (btn) btn.classList.toggle('selected');
+});
+
+function getSelectedDays() {
+  return [...document.querySelectorAll('#dayPicker .day-btn.selected')]
+    .map(b => b.dataset.day)
+    .join(',') || null;
+}
+
+function setSelectedDays(scheduledDays) {
+  document.querySelectorAll('#dayPicker .day-btn').forEach(btn => {
+    btn.classList.remove('selected');
+  });
+  if (!scheduledDays) return;
+  scheduledDays.split(',').forEach(day => {
+    const btn = document.querySelector(`#dayPicker .day-btn[data-day="${day.trim()}"]`);
+    if (btn) btn.classList.add('selected');
+  });
+}
 
 function openForm() {
   if (activeTab === 'packing') return openPackForm();
   document.getElementById('formTitle').textContent = 'Add Task';
   document.getElementById('editId').value = '';
   document.getElementById('fTitle').value = '';
-  document.getElementById('fCadence').value = 'once';
+  document.getElementById('fCadenceType').value = 'once';
+  document.getElementById('fCadenceValue').value = '1';
+  document.getElementById('fCadenceUnit').value = 'weeks';
   document.getElementById('fDueDate').value = '';
   document.getElementById('fNotes').value = '';
-  toggleDueDateRow();
+  setSelectedDays(null);
+  toggleCadenceInputs();
   document.getElementById('formOverlay').classList.add('open');
 }
 
@@ -587,10 +709,13 @@ async function openEdit(id) {
   document.getElementById('formTitle').textContent = 'Edit Task';
   document.getElementById('editId').value = t.id;
   document.getElementById('fTitle').value = t.title;
-  document.getElementById('fCadence').value = t.cadence;
+  document.getElementById('fCadenceType').value = t.cadence_value ? 'recurring' : 'once';
+  document.getElementById('fCadenceValue').value = t.cadence_value || '1';
+  document.getElementById('fCadenceUnit').value = t.cadence_unit || 'weeks';
   document.getElementById('fDueDate').value = t.due_date || '';
   document.getElementById('fNotes').value = t.notes || '';
-  toggleDueDateRow();
+  setSelectedDays(t.scheduled_days);
+  toggleCadenceInputs();
   document.getElementById('formOverlay').classList.add('open');
 }
 
@@ -600,16 +725,25 @@ function closeForm() {
 
 async function submitForm() {
   const editId = document.getElementById('editId').value;
-  const cadence = document.getElementById('fCadence').value;
+  const isRecurring = document.getElementById('fCadenceType').value === 'recurring';
   const body = {
     title: document.getElementById('fTitle').value.trim(),
-    cadence: cadence,
     notes: document.getElementById('fNotes').value.trim() || null,
   };
-  if (cadence === 'once') {
+  if (isRecurring) {
+    body.cadence_value = parseInt(document.getElementById('fCadenceValue').value, 10);
+    body.cadence_unit = document.getElementById('fCadenceUnit').value;
+    body.scheduled_days = getSelectedDays();
+  } else {
+    body.cadence_value = null;
+    body.cadence_unit = null;
     body.due_date = document.getElementById('fDueDate').value || null;
   }
   if (!body.title) { alert('Title is required'); return; }
+  if (isRecurring && (!body.cadence_value || body.cadence_value < 1)) {
+    alert('Please enter a number of 1 or more');
+    return;
+  }
 
   if (editId) {
     await fetch(API + '/tasks/' + editId, {
