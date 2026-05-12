@@ -3,7 +3,7 @@
 import os
 import sqlite3
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastmcp import FastMCP
@@ -85,7 +85,7 @@ def _init_db() -> None:
             last_completed TEXT,
             completed_by TEXT,
             sort_order INTEGER NOT NULL DEFAULT 0,
-            due_date TEXT,
+            next_due TEXT,
             created_at TEXT NOT NULL
         )
     """)
@@ -119,11 +119,24 @@ def _init_db() -> None:
         "cadence_value INTEGER",
         "cadence_unit TEXT",
         "scheduled_days TEXT",
+        "next_due TEXT",
     ):
         try:
             conn.execute(f"ALTER TABLE tasks ADD COLUMN {col_def}")
         except sqlite3.OperationalError:
             pass
+    # Migration: unify due_date → next_due
+    conn.execute("UPDATE tasks SET next_due = due_date WHERE next_due IS NULL AND due_date IS NOT NULL")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS task_completions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            task_title TEXT NOT NULL,
+            completed_at TEXT NOT NULL,
+            completed_by TEXT
+        )
+    """)
 
     # Packing list tables
     conn.execute("""
@@ -224,8 +237,22 @@ def _now_iso() -> str:
 
 def _task_status(row: sqlite3.Row) -> str:
     days = _cadence_days(row)
+    next_due = row["next_due"]
+
     if days is None:
-        return "Complete" if row["last_completed"] else "To Do"
+        # One-time task
+        if row["last_completed"]:
+            return "Complete"
+        if next_due:
+            today = datetime.now(timezone.utc).date()
+            due = date.fromisoformat(next_due)
+            return "Upcoming" if due > today + timedelta(days=14) else "To Do"
+        return "To Do"
+
+    if next_due:
+        today = datetime.now(timezone.utc).date()
+        due = date.fromisoformat(next_due)
+        return "Upcoming" if due > today + timedelta(days=14) else "To Do"
 
     scheduled = _parse_scheduled_days(row["scheduled_days"])
     now = datetime.now(timezone.utc)
@@ -253,7 +280,7 @@ def _task_status(row: sqlite3.Row) -> str:
     last = datetime.fromisoformat(row["last_completed"])
     if last.tzinfo is None:
         last = last.replace(tzinfo=timezone.utc)
-    threshold = now - timedelta(days=days)
+    threshold = now - timedelta(days=days * 0.8)
     return "Complete" if last >= threshold else "To Do"
 
 
@@ -288,19 +315,19 @@ def _format_task(row: sqlite3.Row) -> dict:
         "last_completed": row["last_completed"],
         "completed_by": row["completed_by"],
         "sort_order": row["sort_order"],
-        "due_date": row["due_date"],
+        "next_due": row["next_due"],
         "created_at": row["created_at"],
     }
 
 
 def _sort_tasks(tasks: list[dict]) -> list[dict]:
-    """Sort: To Do before Complete, recurring before one-time.
-    Recurring sorted by title; one-time sorted by sort_order."""
+    """Sort: To Do, Complete, Upcoming. Recurring alphabetical; one-time by sort_order."""
+    status_ord = {"To Do": 0, "Complete": 1, "Upcoming": 2}
     def sort_key(t):
-        status_ord = 0 if t["status"] == "To Do" else 1
+        s = status_ord.get(t["status"], 1)
         recurring_ord = 0 if t["cadence_value"] is not None else 1
         order = t["title"].lower() if t["cadence_value"] is not None else str(t["sort_order"]).zfill(10)
-        return (status_ord, recurring_ord, order)
+        return (s, recurring_ord, order)
     return sorted(tasks, key=sort_key)
 
 
@@ -332,7 +359,7 @@ def list_tasks() -> str:
         notes_bit = f" — {t['notes']}" if t["notes"] else ""
         by_bit = f" by {t['completed_by']}" if t.get("completed_by") else ""
         completed_bit = f" (last: {t['last_completed'][:10]}{by_bit})" if t["last_completed"] else ""
-        due_bit = f" (due: {t['due_date']})" if t.get("due_date") else ""
+        due_bit = f" (next due: {t['next_due']})" if t.get("next_due") else ""
         cadence_display = t["cadence"]
         lines.append(f"- **{t['title']}** [{cadence_display}]{completed_bit}{due_bit}{notes_bit}")
         lines.append(f"  id: `{t['id']}`")
@@ -347,7 +374,7 @@ def add_task(
     cadence_unit: Optional[str] = None,
     scheduled_days: Optional[str] = None,
     notes: Optional[str] = None,
-    due_date: Optional[str] = None,
+    next_due: Optional[str] = None,
 ) -> str:
     """Add a new household task.
 
@@ -357,7 +384,9 @@ def add_task(
         cadence_unit: Unit of repetition — one of: days, weeks, months. Required if cadence_value is set.
         scheduled_days: Optional comma-separated days of week (e.g. "Monday" or "Monday,Thursday"). Only for repeating tasks.
         notes: Optional free text notes about the task
-        due_date: Optional due date for one-time tasks (YYYY-MM-DD format)
+        next_due: Optional date (YYYY-MM-DD) when this task is next due. Works for both one-time and recurring tasks.
+                  Tasks due more than 14 days away show as Upcoming instead of To Do.
+                  For recurring tasks, this advances automatically by the cadence on each completion.
     """
     is_recurring = cadence_value is not None
     if is_recurring:
@@ -368,20 +397,19 @@ def add_task(
     db_scheduled = scheduled_days if is_recurring else None
     if db_scheduled and not _parse_scheduled_days(db_scheduled):
         return f"Invalid scheduled_days '{db_scheduled}'. Use full day names, e.g. 'Monday,Thursday'."
-    db_due_date = due_date if not is_recurring else None
     task_id = str(uuid.uuid4())[:8]
     conn = _get_db()
     max_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM tasks WHERE cadence_value IS NULL").fetchone()[0]
     sort_order = max_order + 1 if not is_recurring else 0
     conn.execute(
-        "INSERT INTO tasks (id, title, cadence_value, cadence_unit, scheduled_days, notes, sort_order, due_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (task_id, title.strip(), cadence_value, cadence_unit, db_scheduled, notes, sort_order, db_due_date, _now_iso()),
+        "INSERT INTO tasks (id, title, cadence_value, cadence_unit, scheduled_days, notes, sort_order, next_due, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (task_id, title.strip(), cadence_value, cadence_unit, db_scheduled, notes, sort_order, next_due, _now_iso()),
     )
     conn.commit()
     conn.close()
     label = _cadence_label(cadence_value, cadence_unit, db_scheduled)
-    due_bit = f", due: {db_due_date}" if db_due_date else ""
-    return f"Added task '{title}' ({label}{due_bit}). ID: {task_id}"
+    next_bit = f", next due: {next_due}" if next_due else ""
+    return f"Added task '{title}' ({label}{next_bit}). ID: {task_id}"
 
 
 @mcp.tool()
@@ -392,12 +420,13 @@ def edit_task(
     cadence_unit: Optional[str] = None,
     scheduled_days: Optional[str] = None,
     notes: Optional[str] = None,
-    due_date: Optional[str] = None,
+    next_due: Optional[str] = None,
 ) -> str:
     """Edit an existing task. Only provided fields are updated.
 
     To make a task one-time (remove recurrence), pass cadence_value=0.
     To clear scheduled days, pass scheduled_days=''.
+    To clear next_due, pass next_due=''.
 
     Args:
         task_id: The task ID (use list_tasks to find it)
@@ -406,7 +435,7 @@ def edit_task(
         cadence_unit: New unit — one of: days, weeks, months
         scheduled_days: Comma-separated days of week (e.g. 'Monday') or '' to clear
         notes: New notes (free text)
-        due_date: Due date for one-time tasks (YYYY-MM-DD format, or empty string to clear)
+        next_due: Next due date (YYYY-MM-DD format, or empty string to clear)
     """
     conn = _get_db()
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -443,13 +472,13 @@ def edit_task(
     if notes is not None:
         updates.append("notes = ?")
         values.append(notes)
-    if due_date is not None:
-        updates.append("due_date = ?")
-        values.append(due_date if due_date else None)
+    if next_due is not None:
+        updates.append("next_due = ?")
+        values.append(next_due if next_due else None)
 
     if not updates:
         conn.close()
-        return "Nothing to update — provide at least one of: title, cadence_value/cadence_unit, scheduled_days, notes, due_date."
+        return "Nothing to update — provide at least one of: title, cadence_value/cadence_unit, scheduled_days, notes, next_due."
 
     values.append(task_id)
     conn.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?", values)
@@ -458,7 +487,7 @@ def edit_task(
     updated = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     conn.close()
     t = _format_task(updated)
-    due_bit = f", due: {t['due_date']}" if t['due_date'] else ""
+    due_bit = f", next due: {t['next_due']}" if t['next_due'] else ""
     return f"Updated '{t['title']}' — cadence: {t['cadence']}, status: {t['status']}{due_bit}"
 
 
@@ -480,17 +509,28 @@ def complete_task(task_id: str, completed_by: Optional[str] = None) -> str:
         return f"No task found with ID '{task_id}'."
 
     now = _now_iso()
+    new_next_due = None
+    cadence_days = _cadence_days(row)
+    if row["next_due"] and cadence_days:
+        old_due = date.fromisoformat(row["next_due"])
+        new_next_due = (old_due + timedelta(days=cadence_days)).isoformat()
+
     conn.execute(
-        "UPDATE tasks SET last_completed = ?, completed_by = ? WHERE id = ?",
-        (now, completed_by, task_id),
+        "UPDATE tasks SET last_completed = ?, completed_by = ?, next_due = COALESCE(?, next_due) WHERE id = ?",
+        (now, completed_by, new_next_due, task_id),
+    )
+    conn.execute(
+        "INSERT INTO task_completions (task_id, task_title, completed_at, completed_by) VALUES (?, ?, ?, ?)",
+        (task_id, row["title"], now, completed_by),
     )
     conn.commit()
     conn.close()
 
     by_bit = f" (by {completed_by})" if completed_by else ""
-    if row["cadence"] is None:
+    if cadence_days is None:
         return f"Completed '{row['title']}'{by_bit} (one-time task — done!)."
-    return f"Completed '{row['title']}'{by_bit}. It'll move back to To Do after one {row['cadence']} cycle."
+    next_bit = f" Next due: {new_next_due}." if new_next_due else ""
+    return f"Completed '{row['title']}'{by_bit}.{next_bit}"
 
 
 @mcp.tool()

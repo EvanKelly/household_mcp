@@ -10,6 +10,7 @@ FastMCP 3.x approach:
 import os
 import sys
 import uuid
+from datetime import date, timedelta
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
@@ -28,6 +29,7 @@ from server import (
     _sort_tasks,
     _canonical_status,
     _parse_scheduled_days,
+    _cadence_days,
     mcp,
     VALID_CADENCE_UNITS,
     DAY_NAMES,
@@ -63,7 +65,6 @@ async def api_add_task(request: Request) -> JSONResponse:
     cadence_value = body.get("cadence_value")
     cadence_unit = body.get("cadence_unit")
     notes = body.get("notes")
-    due_date = body.get("due_date")
 
     if not title:
         return JSONResponse({"error": "title is required"}, status_code=400)
@@ -84,14 +85,14 @@ async def api_add_task(request: Request) -> JSONResponse:
         if not _parse_scheduled_days(scheduled_days_raw):
             return JSONResponse({"error": f"scheduled_days must use full names from: {', '.join(DAY_NAMES)}"}, status_code=400)
     db_scheduled = scheduled_days_raw if is_recurring else None
-    db_due_date = due_date if not is_recurring else None
+    next_due = body.get("next_due") or None
     task_id = str(uuid.uuid4())[:8]
     conn = _get_db()
     max_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM tasks WHERE cadence_value IS NULL").fetchone()[0]
     sort_order = max_order + 1 if not is_recurring else 0
     conn.execute(
-        "INSERT INTO tasks (id, title, cadence_value, cadence_unit, scheduled_days, notes, sort_order, due_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (task_id, title, cadence_value, cadence_unit, db_scheduled, notes, sort_order, db_due_date, _now_iso()),
+        "INSERT INTO tasks (id, title, cadence_value, cadence_unit, scheduled_days, notes, sort_order, next_due, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (task_id, title, cadence_value, cadence_unit, db_scheduled, notes, sort_order, next_due, _now_iso()),
     )
     conn.commit()
     conn.close()
@@ -144,10 +145,9 @@ async def api_edit_task(request: Request) -> JSONResponse:
         updates.append("scheduled_days = ?")
         values.append(sd)
 
-    # Handle due_date separately (can be null/empty to clear)
-    if "due_date" in body:
-        updates.append("due_date = ?")
-        values.append(body["due_date"] if body["due_date"] else None)
+    if "next_due" in body:
+        updates.append("next_due = ?")
+        values.append(body["next_due"] if body["next_due"] else None)
 
     if not updates:
         conn.close()
@@ -175,9 +175,20 @@ async def api_complete_task(request: Request) -> JSONResponse:
         pass
     completed_by = body.get("completed_by") or None
 
+    now = _now_iso()
+    new_next_due = None
+    cadence_days = _cadence_days(row)
+    if row["next_due"] and cadence_days:
+        old_due = date.fromisoformat(row["next_due"])
+        new_next_due = (old_due + timedelta(days=cadence_days)).isoformat()
+
     conn.execute(
-        "UPDATE tasks SET last_completed = ?, completed_by = ? WHERE id = ?",
-        (_now_iso(), completed_by, task_id),
+        "UPDATE tasks SET last_completed = ?, completed_by = ?, next_due = COALESCE(?, next_due) WHERE id = ?",
+        (now, completed_by, new_next_due, task_id),
+    )
+    conn.execute(
+        "INSERT INTO task_completions (task_id, task_title, completed_at, completed_by) VALUES (?, ?, ?, ?)",
+        (task_id, row["title"], now, completed_by),
     )
     conn.commit()
     conn.close()

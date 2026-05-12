@@ -110,6 +110,12 @@
   .overdue { color: #c62828; font-weight: 600; }
   .task-notes { font-size: 0.85em; color: #666; margin-top: 4px; }
 
+  /* Task cadence health colors */
+  .task.tc-green  { border-left: 4px solid #4caf50; }
+  .task.tc-blue   { border-left: 4px solid #1976d2; }
+  .task.tc-orange { border-left: 4px solid #f57c00; }
+  .task.tc-red    { border-left: 4px solid #d32f2f; }
+
   /* Packing card colors by status */
   .pack-card { border-left: 6px solid transparent; }
   .pack-card.s-need {
@@ -208,6 +214,10 @@
   .fab:hover { background: #1565c0; }
 
   .empty { text-align: center; color: #999; padding: 40px 0; }
+
+  .upcoming-summary { cursor: pointer; list-style: none; padding: 8px 0; }
+  .upcoming-summary h2 { display: inline; color: #888; }
+  details[open] .upcoming-summary h2 { color: inherit; }
 
   /* Day-of-week picker */
   .day-picker { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
@@ -330,9 +340,9 @@
         </div>
       </div>
     </div>
-    <div id="dueDateRow">
-      <label for="fDueDate">Due Date</label>
-      <input type="date" id="fDueDate">
+    <div id="nextDueRow" style="margin-top:10px;">
+      <label for="fNextDue">Next due date <span style="font-weight:400;color:#888">(optional)</span></label>
+      <input type="date" id="fNextDue">
     </div>
     <label for="fNotes">Notes</label>
     <textarea id="fNotes" placeholder="Optional details…"></textarea>
@@ -418,6 +428,7 @@ function render(tasks) {
   const todoOnce = tasks.filter(t => t.status === 'To Do' && !t.cadence_value);
   const doneRecurring = tasks.filter(t => t.status === 'Complete' && t.cadence_value);
   const doneOnce = tasks.filter(t => t.status === 'Complete' && !t.cadence_value);
+  const upcoming = tasks.filter(t => t.status === 'Upcoming');
 
   let html = '';
 
@@ -443,6 +454,12 @@ function render(tasks) {
     doneOnce.forEach(t => html += taskCard(t, true));
   }
 
+  if (upcoming.length) {
+    html += `<details><summary class="upcoming-summary"><h2>Upcoming (${upcoming.length})</h2></summary>`;
+    upcoming.forEach(t => html += taskCard(t, false));
+    html += '</details>';
+  }
+
   app.innerHTML = html;
 
   const dragList = document.getElementById('drag-todo-once');
@@ -456,8 +473,8 @@ const DAY_JS = { Sunday:0, Monday:1, Tuesday:2, Wednesday:3, Thursday:4, Friday:
 function daysOverdue(t) {
   if (t.status !== 'To Do') return null;
   if (!t.cadence_value) {
-    if (!t.due_date) return null;
-    const due = new Date(t.due_date + 'T00:00:00');
+    if (!t.next_due) return null;
+    const due = new Date(t.next_due + 'T00:00:00');
     const over = Math.floor((Date.now() - due) / 86400000);
     return over > 0 ? over : null;
   }
@@ -479,10 +496,24 @@ function daysOverdue(t) {
   return over > 0 ? over : null;
 }
 
+function taskColor(t) {
+  // Only color cadence-based recurring tasks that have been completed at least once.
+  // Skips: never-completed, next_due-based, scheduled-day tasks.
+  if (!t.cadence_value || !t.last_completed || t.next_due || t.scheduled_days) return null;
+  const cadenceDays = t.cadence_value * UNIT_DAYS[t.cadence_unit];
+  const pct = (Date.now() - new Date(t.last_completed)) / (cadenceDays * 86400000);
+  if (pct < 0.8)  return 'tc-green';
+  if (pct < 1.0)  return 'tc-blue';
+  if (pct < 1.1)  return 'tc-orange';
+  return 'tc-red';
+}
+
 function taskCard(t, complete) {
   let cls = 'task';
   if (complete) cls += ' complete';
   if (t.cadence === 'once') cls += ' once';
+  const color = taskColor(t);
+  if (color) cls += ' ' + color;
   const notes = t.notes ? `<div class="task-notes">${esc(t.notes)}</div>` : '';
   const lastDone = t.last_completed ? t.last_completed.slice(0, 10) : 'never';
   const byBit = t.completed_by ? ` by ${esc(t.completed_by)}` : '';
@@ -496,7 +527,9 @@ function taskCard(t, complete) {
     ? ` · <span class="overdue">${overdue} day${overdue === 1 ? '' : 's'} overdue</span>` : '';
   let metaText;
   if (!isRecurring) {
-    metaText = t.due_date ? `due: ${t.due_date}` : 'once';
+    metaText = t.next_due ? `due: ${t.next_due}` : 'once';
+  } else if (t.status === 'Upcoming') {
+    metaText = `${esc(t.cadence)} · next due: ${t.next_due}`;
   } else {
     metaText = `${esc(t.cadence)} · last: ${lastDone}${byBit}`;
   }
@@ -651,7 +684,6 @@ async function deleteTask(id, title) {
 function toggleCadenceInputs() {
   const isRecurring = document.getElementById('fCadenceType').value === 'recurring';
   document.getElementById('cadenceInputRow').style.display = isRecurring ? '' : 'none';
-  document.getElementById('dueDateRow').style.display = isRecurring ? 'none' : '';
   if (isRecurring) toggleDayPicker();
 }
 
@@ -693,7 +725,7 @@ function openForm() {
   document.getElementById('fCadenceType').value = 'once';
   document.getElementById('fCadenceValue').value = '1';
   document.getElementById('fCadenceUnit').value = 'weeks';
-  document.getElementById('fDueDate').value = '';
+  document.getElementById('fNextDue').value = '';
   document.getElementById('fNotes').value = '';
   setSelectedDays(null);
   toggleCadenceInputs();
@@ -712,7 +744,7 @@ async function openEdit(id) {
   document.getElementById('fCadenceType').value = t.cadence_value ? 'recurring' : 'once';
   document.getElementById('fCadenceValue').value = t.cadence_value || '1';
   document.getElementById('fCadenceUnit').value = t.cadence_unit || 'weeks';
-  document.getElementById('fDueDate').value = t.due_date || '';
+  document.getElementById('fNextDue').value = t.next_due || '';
   document.getElementById('fNotes').value = t.notes || '';
   setSelectedDays(t.scheduled_days);
   toggleCadenceInputs();
@@ -737,8 +769,8 @@ async function submitForm() {
   } else {
     body.cadence_value = null;
     body.cadence_unit = null;
-    body.due_date = document.getElementById('fDueDate').value || null;
   }
+  body.next_due = document.getElementById('fNextDue').value || null;
   if (!body.title) { alert('Title is required'); return; }
   if (isRecurring && (!body.cadence_value || body.cadence_value < 1)) {
     alert('Please enter a number of 1 or more');
