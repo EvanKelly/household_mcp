@@ -252,6 +252,14 @@ def _task_status(row: sqlite3.Row) -> str:
     if next_due:
         today = datetime.now(timezone.utc).date()
         due = date.fromisoformat(next_due)
+        if row["last_completed"] and days:
+            # Complete if last_completed is after the previous due date
+            prev_due = due - timedelta(days=days)
+            last = datetime.fromisoformat(row["last_completed"])
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            if last.date() >= prev_due:
+                return "Upcoming" if due > today + timedelta(days=14) else "Complete"
         return "Upcoming" if due > today + timedelta(days=14) else "To Do"
 
     scheduled = _parse_scheduled_days(row["scheduled_days"])
@@ -280,6 +288,9 @@ def _task_status(row: sqlite3.Row) -> str:
     last = datetime.fromisoformat(row["last_completed"])
     if last.tzinfo is None:
         last = last.replace(tzinfo=timezone.utc)
+    # Daily tasks reset at midnight (calendar date) rather than a rolling 24h window.
+    if days == 1:
+        return "Complete" if last.date() >= now.date() else "To Do"
     threshold = now - timedelta(days=days * 0.8)
     return "Complete" if last >= threshold else "To Do"
 
