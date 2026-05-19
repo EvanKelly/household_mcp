@@ -11,10 +11,14 @@ import os
 import sys
 import uuid
 from datetime import date, timedelta
+from pathlib import Path
 
+from dotenv import load_dotenv
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
+
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 # Add parent dir so we can import server module
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
