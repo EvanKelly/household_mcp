@@ -203,6 +203,19 @@
   .form-actions { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
 
   /* Add button */
+  .app-nav {
+    position: fixed; bottom: 24px; left: 16px;
+    display: flex; background: rgba(255,255,255,0.95); border-radius: 20px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15); z-index: 50; overflow: hidden;
+    border: 1px solid #e0e0e0;
+  }
+  .app-nav a {
+    padding: 8px 14px; font-size: 0.8em; font-weight: 700;
+    text-decoration: none; color: #888; white-space: nowrap;
+  }
+  .app-nav a.active { background: #1976d2; color: #fff; }
+  .app-nav a:not(.active):hover { background: #f0f0f0; color: #333; }
+
   .fab {
     position: fixed; bottom: 24px; right: 24px;
     width: 56px; height: 56px; border-radius: 50%;
@@ -249,20 +262,104 @@
 
   /* Drag list container */
   .drag-list { min-height: 4px; }
+
+  /* ── Calendar view ── */
+  .cal-layout {
+    display: flex; gap: 12px;
+    height: calc(100vh - 100px);
+  }
+  .cal-sidebar {
+    width: 200px; flex-shrink: 0;
+    display: flex; flex-direction: column; gap: 0;
+    overflow-y: auto;
+  }
+  .cal-sidebar h3 { margin: 0 0 8px; font-size: 0.88em; color: #666; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .cal-chip {
+    background: #fff; border-radius: 6px; padding: 8px 10px;
+    margin-bottom: 5px; font-size: 0.8em; font-weight: 600;
+    cursor: grab; box-shadow: 0 1px 3px rgba(0,0,0,0.09);
+    border-left: 3px solid #ccc;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    user-select: none;
+  }
+  .cal-chip.cal-selected { border-left-color: #1976d2; box-shadow: 0 0 0 2px #1976d2; }
+  .cal-chip:active { opacity: 0.7; }
+
+  .cal-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .cal-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .cal-nav h2 { flex: 1; text-align: center; margin: 0; font-size: 1.1em; }
+  .cal-nav button { background: #f0f0f0; border: none; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 1em; }
+  .cal-nav button:hover { background: #e0e0e0; }
+
+  .cal-grid {
+    flex: 1; display: grid; grid-template-columns: repeat(7, 1fr);
+    gap: 3px; overflow-y: auto; align-content: start;
+  }
+  .cal-dow { text-align: center; font-size: 0.75em; font-weight: 700; color: #999; padding: 4px 0; }
+  .cal-cell {
+    background: #fff; border-radius: 6px; padding: 4px 5px;
+    min-height: 72px; box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+    overflow: hidden; cursor: default;
+  }
+  .cal-cell.other-month { background: #f7f7f7; box-shadow: none; opacity: 0.5; }
+  .cal-cell.today { box-shadow: 0 0 0 2px #1976d2; }
+  .cal-cell.drag-over { background: #e3f2fd; }
+  .cal-cell.cal-drop-target { background: #e8f5e9; cursor: pointer; }
+  .cal-date { font-size: 0.74em; font-weight: 700; color: #aaa; margin-bottom: 2px; }
+  .cal-cell.today .cal-date { color: #1976d2; }
+  .cal-task-chip {
+    font-size: 0.7em; font-weight: 600; padding: 2px 5px;
+    border-radius: 4px; margin-top: 2px; cursor: grab;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    user-select: none;
+  }
+  .cal-task-chip.tc-green  { background: #e8f5e9; color: #2e7d32; }
+  .cal-task-chip.tc-blue   { background: #e3f2fd; color: #1565c0; }
+  .cal-task-chip.tc-orange { background: #fff3e0; color: #e65100; }
+  .cal-task-chip.tc-red    { background: #ffebee; color: #c62828; }
+  .cal-task-chip.tc-none   { background: #f0f0f0; color: #555; }
+  .cal-task-chip.cal-selected { outline: 2px solid #1976d2; }
+
+  #calTooltip {
+    display: none; position: fixed; z-index: 200; pointer-events: none;
+    background: #333; color: #fff; font-size: 0.82em; font-weight: 600;
+    padding: 6px 10px; border-radius: 6px; max-width: 260px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+    word-break: break-word;
+  }
 </style>
 </head>
 <body>
 
-<!-- Tabs (packing hidden for now) -->
-<div class="tabs-bar" style="display:none">
+<!-- Tabs -->
+<div class="tabs-bar">
   <button class="tab-btn active" id="tab-household" onclick="switchTab('household')">Household Tasks</button>
-  <button class="tab-btn" id="tab-packing" onclick="switchTab('packing')">Bahamas Packing</button>
+  <button class="tab-btn" id="tab-calendar" onclick="switchTab('calendar')">Calendar</button>
+  <button class="tab-btn" id="tab-packing" onclick="switchTab('packing')" style="display:none">Bahamas Packing</button>
 </div>
 
 <!-- Household tab content -->
 <div id="view-household">
   <h1>Household Tasks</h1>
   <div id="app"><div class="empty">Loading…</div></div>
+</div>
+
+<!-- Calendar tab content -->
+<div id="view-calendar" style="display:none;">
+  <div class="cal-layout">
+    <div class="cal-sidebar">
+      <h3>Unscheduled</h3>
+      <div id="calSidebar"></div>
+    </div>
+    <div class="cal-main">
+      <div class="cal-nav">
+        <button onclick="calPrev()">&#8592;</button>
+        <h2 id="calMonthLabel"></h2>
+        <button onclick="calNext()">&#8594;</button>
+      </div>
+      <div class="cal-grid" id="calGrid"></div>
+    </div>
+  </div>
 </div>
 
 <!-- Packing tab content -->
@@ -288,6 +385,9 @@
   <div id="packingApp"><div class="empty">Loading…</div></div>
 </div>
 
+<!-- Floating tooltip for calendar chips -->
+<div id="calTooltip"></div>
+
 <!-- Who did it? modal -->
 <div class="form-overlay" id="whoOverlay">
   <div class="form-box">
@@ -303,6 +403,11 @@
 </div>
 
 <!-- Floating add button -->
+<nav class="app-nav">
+  <a class="active" href="#">Household</a>
+  <a id="navKitchen" href="#">Kitchen</a>
+</nav>
+
 <button class="fab" onclick="openForm()" title="Add">+</button>
 
 <!-- Household Add / Edit form -->
@@ -401,10 +506,13 @@ function switchTab(tab) {
   activeTab = tab;
   localStorage.setItem('activeTab', tab);
   document.getElementById('tab-household').classList.toggle('active', tab === 'household');
+  document.getElementById('tab-calendar').classList.toggle('active', tab === 'calendar');
   document.getElementById('tab-packing').classList.toggle('active', tab === 'packing');
   document.getElementById('view-household').style.display = tab === 'household' ? '' : 'none';
+  document.getElementById('view-calendar').style.display = tab === 'calendar' ? '' : 'none';
   document.getElementById('view-packing').style.display = tab === 'packing' ? '' : 'none';
   if (tab === 'packing') loadPacking();
+  else if (tab === 'calendar') loadCalendar();
   else loadTasks();
 }
 
@@ -1058,7 +1166,165 @@ document.getElementById('packFormOverlay').addEventListener('click', e => {
   if (e.target === e.currentTarget) closePackForm();
 });
 
+// ============================================================
+// CALENDAR TOOLTIP
+// ============================================================
+let _calTipTimeout = null;
+const _calTip = () => document.getElementById('calTooltip');
+
+function showCalTip(el) {
+  const tip = _calTip();
+  tip.textContent = el.dataset.title;
+  tip.style.display = 'block';
+  const r = el.getBoundingClientRect();
+  const left = Math.min(r.left, window.innerWidth - 270);
+  const top = r.bottom + 6 < window.innerHeight - 40 ? r.bottom + 6 : r.top - 40;
+  tip.style.left = left + 'px';
+  tip.style.top = top + 'px';
+}
+
+function hideCalTip() {
+  _calTip().style.display = 'none';
+  clearTimeout(_calTipTimeout);
+}
+
+function touchCalTip(el) {
+  showCalTip(el);
+  clearTimeout(_calTipTimeout);
+  _calTipTimeout = setTimeout(hideCalTip, 2000);
+}
+
+// ============================================================
+// CALENDAR VIEW
+// ============================================================
+let calYear = new Date().getFullYear();
+let calMonth = new Date().getMonth();
+let calTasks = [];
+let calSelectedId = null; // touch: selected task waiting for a date tap
+
+async function loadCalendar() {
+  const res = await fetch(API + '/tasks');
+  calTasks = await res.json();
+  renderCal();
+}
+
+function renderCal() {
+  renderCalSidebar();
+  renderCalGrid();
+}
+
+function renderCalSidebar() {
+  const unscheduled = calTasks.filter(t => !t.next_due);
+  const el = document.getElementById('calSidebar');
+  if (!unscheduled.length) {
+    el.innerHTML = '<div style="color:#aaa;font-size:0.85em;padding:8px 0">All tasks scheduled!</div>';
+    return;
+  }
+  el.innerHTML = unscheduled.map(t => {
+    const sel = calSelectedId === t.id ? ' cal-selected' : '';
+    return `<div class="cal-chip${sel}" draggable="true" data-id="${t.id}" data-title="${esc(t.title)}"
+      ondragstart="calDragStart(event,'${t.id}')"
+      onclick="calSelectTask('${t.id}')"
+      onmouseenter="showCalTip(this)" onmouseleave="hideCalTip()"
+      ontouchstart="touchCalTip(this)">${esc(t.title)}</div>`;
+  }).join('');
+}
+
+function renderCalGrid() {
+  document.getElementById('calMonthLabel').textContent =
+    new Date(calYear, calMonth).toLocaleString('default', { month: 'long', year: 'numeric' });
+
+  const firstDow   = new Date(calYear, calMonth, 1).getDay();
+  const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+  const today      = new Date();
+
+  // Group tasks by next_due date string
+  const byDate = {};
+  calTasks.filter(t => t.next_due).forEach(t => {
+    (byDate[t.next_due] = byDate[t.next_due] || []).push(t);
+  });
+
+  const hasSelected = !!calSelectedId;
+  let html = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+    .map(d => `<div class="cal-dow">${d}</div>`).join('');
+
+  // Leading empty cells
+  for (let i = 0; i < firstDow; i++) html += '<div class="cal-cell other-month"></div>';
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const ds = `${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const isToday = today.getFullYear()===calYear && today.getMonth()===calMonth && today.getDate()===d;
+    const dropTarget = hasSelected ? ' cal-drop-target' : '';
+    const chips = (byDate[ds] || []).map(t => {
+      const col = taskColor(t) || 'tc-none';
+      const sel = calSelectedId === t.id ? ' cal-selected' : '';
+      return `<div class="cal-task-chip ${col}${sel}" draggable="true" data-title="${esc(t.title)}"
+        ondragstart="calDragStart(event,'${t.id}')"
+        onclick="event.stopPropagation();calSelectTask('${t.id}')"
+        onmouseenter="showCalTip(this)" onmouseleave="hideCalTip()"
+        ontouchstart="touchCalTip(this)">${esc(t.title)}</div>`;
+    }).join('');
+    html += `<div class="cal-cell${isToday?' today':''}${dropTarget}"
+      ondragover="event.preventDefault();this.classList.add('drag-over')"
+      ondragleave="this.classList.remove('drag-over')"
+      ondrop="calDrop(event,this,'${ds}')"
+      onclick="calCellClick('${ds}')">
+      <div class="cal-date">${d}</div>${chips}</div>`;
+  }
+
+  // Trailing empty cells to complete the last row
+  const remainder = (firstDow + daysInMonth) % 7;
+  for (let i = 0; i < (remainder ? 7 - remainder : 0); i++)
+    html += '<div class="cal-cell other-month"></div>';
+
+  document.getElementById('calGrid').innerHTML = html;
+}
+
+function calSelectTask(id) {
+  calSelectedId = calSelectedId === id ? null : id;
+  renderCal();
+}
+
+function calCellClick(dateStr) {
+  if (!calSelectedId) return;
+  calAssign(calSelectedId, dateStr);
+}
+
+function calDragStart(event, id) {
+  event.dataTransfer.setData('taskId', id);
+  calSelectedId = null;
+  renderCalSidebar(); // clear selection highlight
+}
+
+async function calDrop(event, cell, dateStr) {
+  event.preventDefault();
+  cell.classList.remove('drag-over');
+  const id = event.dataTransfer.getData('taskId');
+  if (id) calAssign(id, dateStr);
+}
+
+async function calAssign(id, dateStr) {
+  await fetch(API + '/tasks/' + id, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ next_due: dateStr }),
+  });
+  calSelectedId = null;
+  loadCalendar();
+}
+
+function calPrev() {
+  if (--calMonth < 0) { calMonth = 11; calYear--; }
+  renderCalGrid();
+}
+
+function calNext() {
+  if (++calMonth > 11) { calMonth = 0; calYear++; }
+  renderCalGrid();
+}
+
 // --- Initial load ---
+document.getElementById('navKitchen').href = `http://${location.hostname}:8001`;
 switchTab(activeTab);
 </script>
 </body>
