@@ -340,7 +340,10 @@
 
 <!-- Household tab content -->
 <div id="view-household">
-  <h1>Household Tasks</h1>
+  <div style="display:flex;align-items:center;padding:12px 16px 0">
+    <h1 style="flex:1;font-size:1.2em;font-weight:700">Household Tasks</h1>
+    <button id="fsBtn" style="background:none;border:none;font-size:1.3em;cursor:pointer;padding:2px 6px" onclick="toggleFullscreen()" title="Fullscreen">⛶</button>
+  </div>
   <div id="app"><div class="empty">Loading…</div></div>
 </div>
 
@@ -1322,6 +1325,18 @@ function calNext() {
   if (++calMonth > 11) { calMonth = 0; calYear++; }
   renderCalGrid();
 }
+
+// --- Fullscreen ---
+function toggleFullscreen() {
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen();
+  } else {
+    document.exitFullscreen();
+  }
+}
+document.addEventListener('fullscreenchange', () => {
+  document.getElementById('fsBtn').textContent = document.fullscreenElement ? '✕' : '⛶';
+});
 
 // --- Initial load ---
 document.getElementById('navKitchen').href = `http://${location.hostname}:8001`;
