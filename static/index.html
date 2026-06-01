@@ -94,6 +94,31 @@
     gap: 10px;
     transition: transform 0.15s, box-shadow 0.15s;
   }
+  .crumb-notes {
+    margin-top: 5px;
+    padding-left: 8px;
+    border-left: 2px solid #e0e0e0;
+  }
+  .crumb-note {
+    font-size: 0.74em;
+    color: #777;
+    line-height: 1.5;
+  }
+  .crumb-note .crumb-meta {
+    color: #aaa;
+  }
+  .category-pill {
+    display: inline-block;
+    background: #ede7f6;
+    color: #4527a0;
+    font-size: 0.72em;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 10px;
+    margin-left: 6px;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
   .task.once { background: #e8f0fe; }
   .task.complete { opacity: 0.55; }
   .task.dragging {
@@ -335,7 +360,8 @@
 <div class="tabs-bar">
   <button class="tab-btn active" id="tab-household" onclick="switchTab('household')">Household Tasks</button>
   <button class="tab-btn" id="tab-calendar" onclick="switchTab('calendar')">Calendar</button>
-  <button class="tab-btn" id="tab-packing" onclick="switchTab('packing')" style="display:none">Bahamas Packing</button>
+  <button class="tab-btn" id="tab-recurring" onclick="switchTab('recurring')">Recurring</button>
+  <button class="tab-btn" id="tab-packing" onclick="switchTab('packing')">East Coast Trip Packing</button>
 </div>
 
 <!-- Household tab content -->
@@ -363,6 +389,14 @@
       <div class="cal-grid" id="calGrid"></div>
     </div>
   </div>
+</div>
+
+<!-- Recurring tab content -->
+<div id="view-recurring" style="display:none;">
+  <div style="display:flex;align-items:center;padding:12px 16px 0">
+    <h1 style="flex:1;font-size:1.2em;font-weight:700">Recurring Tasks</h1>
+  </div>
+  <div id="app-recurring"><div class="empty">Loading…</div></div>
 </div>
 
 <!-- Packing tab content -->
@@ -395,7 +429,9 @@
 <div class="form-overlay" id="whoOverlay">
   <div class="form-box">
     <h2>Who did it?</h2>
-    <div class="who-buttons">
+    <label for="completionNote" style="margin-top:4px">Note <span style="font-weight:400;color:#888">(optional)</span></label>
+    <textarea id="completionNote" placeholder="Any notes about this completion…" rows="2" style="width:100%;padding:8px 10px;border:1px solid #ccc;border-radius:6px;font-size:0.95em;font-family:inherit;resize:none;margin-top:4px;-webkit-user-select:text;user-select:text"></textarea>
+    <div class="who-buttons" style="margin-top:12px">
       <button class="btn-who" onclick="submitComplete('Evan')">Evan</button>
       <button class="btn-who" onclick="submitComplete('Emily')">Emily</button>
     </div>
@@ -452,6 +488,12 @@
       <label for="fNextDue">Next due date <span style="font-weight:400;color:#888">(optional)</span></label>
       <input type="date" id="fNextDue">
     </div>
+    <label for="fCategory">Category <span style="font-weight:400;color:#888">(optional)</span></label>
+    <select id="fCategory" onchange="onCategoryChange()" style="width:100%;padding:8px 10px;border:1px solid #ccc;border-radius:6px;font-size:0.95em;font-family:inherit;background:#fff;">
+      <option value="">No category</option>
+      <option value="__new__">+ Create new category…</option>
+    </select>
+    <input type="text" id="fCategoryNew" placeholder="New category name" style="display:none;margin-top:6px;width:100%;padding:8px 10px;border:1px solid #ccc;border-radius:6px;font-size:0.95em;font-family:inherit;">
     <label for="fNotes">Notes</label>
     <textarea id="fNotes" placeholder="Optional details…"></textarea>
     <div class="form-actions">
@@ -510,12 +552,15 @@ function switchTab(tab) {
   localStorage.setItem('activeTab', tab);
   document.getElementById('tab-household').classList.toggle('active', tab === 'household');
   document.getElementById('tab-calendar').classList.toggle('active', tab === 'calendar');
+  document.getElementById('tab-recurring').classList.toggle('active', tab === 'recurring');
   document.getElementById('tab-packing').classList.toggle('active', tab === 'packing');
   document.getElementById('view-household').style.display = tab === 'household' ? '' : 'none';
   document.getElementById('view-calendar').style.display = tab === 'calendar' ? '' : 'none';
+  document.getElementById('view-recurring').style.display = tab === 'recurring' ? '' : 'none';
   document.getElementById('view-packing').style.display = tab === 'packing' ? '' : 'none';
   if (tab === 'packing') loadPacking();
   else if (tab === 'calendar') loadCalendar();
+  else if (tab === 'recurring') loadRecurring();
   else loadTasks();
 }
 
@@ -575,6 +620,43 @@ function render(tasks) {
 
   const dragList = document.getElementById('drag-todo-once');
   if (dragList) initDrag(dragList);
+}
+
+async function loadRecurring() {
+  const res = await fetch(API + '/tasks');
+  const tasks = await res.json();
+  renderRecurring(tasks);
+}
+
+function renderRecurring(tasks) {
+  const app = document.getElementById('app-recurring');
+  const recurring = tasks.filter(t => t.cadence_value);
+
+  if (!recurring.length) {
+    app.innerHTML = '<div class="empty">No recurring tasks yet.</div>';
+    return;
+  }
+
+  const todo = recurring.filter(t => t.status === 'To Do').sort((a, b) => a.title.localeCompare(b.title));
+  const complete = recurring.filter(t => t.status === 'Complete').sort((a, b) => a.title.localeCompare(b.title));
+  const upcoming = recurring.filter(t => t.status === 'Upcoming').sort((a, b) => a.title.localeCompare(b.title));
+
+  let html = `<div style="padding:8px 0 4px;color:#888;font-size:0.85em">${recurring.length} recurring · ${todo.length} to do · ${complete.length} complete · ${upcoming.length} upcoming</div>`;
+
+  if (todo.length) {
+    html += `<h2>To Do</h2>`;
+    todo.forEach(t => html += taskCard(t, false));
+  }
+  if (complete.length) {
+    html += `<h2>Complete</h2>`;
+    complete.forEach(t => html += taskCard(t, true));
+  }
+  if (upcoming.length) {
+    html += `<h2>Upcoming</h2>`;
+    upcoming.forEach(t => html += taskCard(t, false));
+  }
+
+  app.innerHTML = html;
 }
 
 const UNIT_DAYS = { days: 1, weeks: 7, months: 30 };
@@ -644,13 +726,23 @@ function taskCard(t, complete) {
   } else {
     metaText = `${esc(t.cadence)} · last: ${lastDone}${byBit}`;
   }
+  const categoryPill = t.category ? `<span class="category-pill">${esc(t.category)}</span>` : '';
+  const MO = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const crumbHtml = (t.completion_notes && t.completion_notes.length)
+    ? '<div class="crumb-notes">' + t.completion_notes.map(n => {
+        const d = new Date(n.date + 'T00:00:00');
+        const dateStr = MO[d.getMonth()] + ' ' + d.getDate();
+        const byStr = n.by ? ` · ${esc(n.by)}` : '';
+        return `<div class="crumb-note"><span class="crumb-meta">${dateStr}${byStr}</span> — ${esc(n.note)}</div>`;
+      }).join('') + '</div>'
+    : '';
   return `
     <div class="${cls}" data-id="${t.id}">
       ${handle}
       <div class="task-body">
-        <div class="task-title">${esc(t.title)}</div>
+        <div class="task-title">${esc(t.title)}${categoryPill}</div>
         <div class="task-meta">${metaText}${overdueBit}</div>
-        ${notes}
+        ${notes}${crumbHtml}
       </div>
       <div class="task-actions">
         ${doneBtn}
@@ -768,17 +860,20 @@ function completeTask(id) {
 
 async function submitComplete(person) {
   const id = pendingCompleteId;
+  const note = document.getElementById('completionNote').value.trim() || null;
   closeWhoModal();
   await fetch(API + '/tasks/' + id + '/complete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ completed_by: person }),
+    body: JSON.stringify({ completed_by: person, note }),
   });
-  loadTasks();
+  if (activeTab === 'recurring') loadRecurring();
+  else loadTasks();
 }
 
 function closeWhoModal() {
   document.getElementById('whoOverlay').classList.remove('open');
+  document.getElementById('completionNote').value = '';
   pendingCompleteId = null;
 }
 
@@ -789,7 +884,8 @@ document.getElementById('whoOverlay').addEventListener('click', e => {
 async function deleteTask(id, title) {
   if (!confirm('Delete "' + title + '"?')) return;
   await fetch(API + '/tasks/' + id, { method: 'DELETE' });
-  loadTasks();
+  if (activeTab === 'recurring') loadRecurring();
+  else loadTasks();
 }
 
 function toggleCadenceInputs() {
@@ -828,7 +924,43 @@ function setSelectedDays(scheduledDays) {
   });
 }
 
-function openForm() {
+async function loadCategoryOptions(selectedCategory) {
+  const res = await fetch(API + '/categories');
+  const cats = await res.json();
+  const sel = document.getElementById('fCategory');
+  // Remove all dynamic options (keep first "No category" and last "+ Create new")
+  while (sel.options.length > 1) sel.remove(1);
+  const newOpt = document.createElement('option');
+  newOpt.value = '__new__';
+  newOpt.textContent = '+ Create new category…';
+  cats.forEach(cat => {
+    const opt = document.createElement('option');
+    opt.value = cat;
+    opt.textContent = cat;
+    sel.appendChild(opt);
+  });
+  sel.appendChild(newOpt);
+  sel.value = (selectedCategory && cats.includes(selectedCategory)) ? selectedCategory : '';
+  document.getElementById('fCategoryNew').style.display = 'none';
+  document.getElementById('fCategoryNew').value = '';
+}
+
+function onCategoryChange() {
+  const isNew = document.getElementById('fCategory').value === '__new__';
+  const newInput = document.getElementById('fCategoryNew');
+  newInput.style.display = isNew ? '' : 'none';
+  if (isNew) newInput.focus();
+}
+
+function getCategory() {
+  const sel = document.getElementById('fCategory').value;
+  if (sel === '__new__') {
+    return document.getElementById('fCategoryNew').value.trim() || null;
+  }
+  return sel || null;
+}
+
+async function openForm() {
   if (activeTab === 'packing') return openPackForm();
   document.getElementById('formTitle').textContent = 'Add Task';
   document.getElementById('editId').value = '';
@@ -840,6 +972,7 @@ function openForm() {
   document.getElementById('fNotes').value = '';
   setSelectedDays(null);
   toggleCadenceInputs();
+  await loadCategoryOptions(null);
   document.getElementById('formOverlay').classList.add('open');
 }
 
@@ -859,6 +992,7 @@ async function openEdit(id) {
   document.getElementById('fNotes').value = t.notes || '';
   setSelectedDays(t.scheduled_days);
   toggleCadenceInputs();
+  await loadCategoryOptions(t.category || null);
   document.getElementById('formOverlay').classList.add('open');
 }
 
@@ -872,6 +1006,7 @@ async function submitForm() {
   const body = {
     title: document.getElementById('fTitle').value.trim(),
     notes: document.getElementById('fNotes').value.trim() || null,
+    category: getCategory(),
   };
   if (isRecurring) {
     body.cadence_value = parseInt(document.getElementById('fCadenceValue').value, 10);
@@ -902,7 +1037,8 @@ async function submitForm() {
     });
   }
   closeForm();
-  loadTasks();
+  if (activeTab === 'recurring') loadRecurring();
+  else loadTasks();
 }
 
 document.getElementById('formOverlay').addEventListener('click', e => {
@@ -1336,6 +1472,19 @@ function toggleFullscreen() {
 }
 document.addEventListener('fullscreenchange', () => {
   document.getElementById('fsBtn').textContent = document.fullscreenElement ? '✕' : '⛶';
+});
+
+// --- Auto-refresh ---
+function refreshCurrentTab() {
+  if (document.visibilityState !== 'visible') return;
+  if (activeTab === 'packing') loadPacking();
+  else if (activeTab === 'calendar') loadCalendar();
+  else if (activeTab === 'recurring') loadRecurring();
+  else loadTasks();
+}
+setInterval(refreshCurrentTab, 30000);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') refreshCurrentTab();
 });
 
 // --- Initial load ---

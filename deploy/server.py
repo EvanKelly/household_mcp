@@ -55,11 +55,39 @@ async def head_root(request: Request) -> Response:
 # ---------------------------------------------------------------------------
 # JSON REST API for web UI
 # ---------------------------------------------------------------------------
+async def api_list_categories(request: Request) -> JSONResponse:
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT DISTINCT category FROM tasks WHERE category IS NOT NULL AND category != '' ORDER BY category"
+    ).fetchall()
+    conn.close()
+    return JSONResponse([r[0] for r in rows])
+
+
 async def api_list_tasks(request: Request) -> JSONResponse:
     conn = _get_db()
     rows = conn.execute("SELECT * FROM tasks ORDER BY title").fetchall()
+    note_rows = conn.execute(
+        "SELECT task_id, completed_at, completed_by, note FROM task_completions "
+        "WHERE note IS NOT NULL AND note != '' ORDER BY completed_at DESC"
+    ).fetchall()
     conn.close()
-    tasks = _sort_tasks([_format_task(r) for r in rows])
+
+    notes_by_task: dict[str, list] = {}
+    for r in note_rows:
+        tid = r["task_id"]
+        if tid not in notes_by_task:
+            notes_by_task[tid] = []
+        if len(notes_by_task[tid]) < 3:
+            notes_by_task[tid].append({
+                "date": r["completed_at"][:10],
+                "by": r["completed_by"],
+                "note": r["note"],
+            })
+    for tid in notes_by_task:
+        notes_by_task[tid].reverse()  # chronological order (oldest first)
+
+    tasks = _sort_tasks([_format_task(r, notes_by_task.get(r["id"], [])) for r in rows])
     return JSONResponse(tasks)
 
 
@@ -90,13 +118,15 @@ async def api_add_task(request: Request) -> JSONResponse:
             return JSONResponse({"error": f"scheduled_days must use full names from: {', '.join(DAY_NAMES)}"}, status_code=400)
     db_scheduled = scheduled_days_raw if is_recurring else None
     next_due = body.get("next_due") or None
+    category_raw = body.get("category")
+    category = category_raw.strip() if isinstance(category_raw, str) and category_raw.strip() else None
     task_id = str(uuid.uuid4())[:8]
     conn = _get_db()
     max_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM tasks WHERE cadence_value IS NULL").fetchone()[0]
     sort_order = max_order + 1 if not is_recurring else 0
     conn.execute(
-        "INSERT INTO tasks (id, title, cadence_value, cadence_unit, scheduled_days, notes, sort_order, next_due, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (task_id, title, cadence_value, cadence_unit, db_scheduled, notes, sort_order, next_due, _now_iso()),
+        "INSERT INTO tasks (id, title, cadence_value, cadence_unit, scheduled_days, notes, sort_order, next_due, category, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (task_id, title, cadence_value, cadence_unit, db_scheduled, notes, sort_order, next_due, category, _now_iso()),
     )
     conn.commit()
     conn.close()
@@ -153,6 +183,11 @@ async def api_edit_task(request: Request) -> JSONResponse:
         updates.append("next_due = ?")
         values.append(body["next_due"] if body["next_due"] else None)
 
+    if "category" in body:
+        updates.append("category = ?")
+        cat = body["category"]
+        values.append(cat.strip() if isinstance(cat, str) and cat.strip() else None)
+
     if not updates:
         conn.close()
         return JSONResponse({"error": "nothing to update"}, status_code=400)
@@ -178,6 +213,7 @@ async def api_complete_task(request: Request) -> JSONResponse:
     except Exception:
         pass
     completed_by = body.get("completed_by") or None
+    completion_note = body.get("note") or None
 
     now = _now_iso()
     new_next_due = None
@@ -191,8 +227,8 @@ async def api_complete_task(request: Request) -> JSONResponse:
         (now, completed_by, new_next_due, task_id),
     )
     conn.execute(
-        "INSERT INTO task_completions (task_id, task_title, completed_at, completed_by) VALUES (?, ?, ?, ?)",
-        (task_id, row["title"], now, completed_by),
+        "INSERT INTO task_completions (task_id, task_title, completed_at, completed_by, note) VALUES (?, ?, ?, ?, ?)",
+        (task_id, row["title"], now, completed_by, completion_note),
     )
     conn.commit()
     conn.close()
@@ -457,6 +493,7 @@ app = mcp.http_app(path="/")
 custom_routes = [
     Route("/", head_root, methods=["HEAD"]),
     Route("/ui", serve_index, methods=["GET"]),
+    Route("/api/categories", api_list_categories, methods=["GET"]),
     Route("/api/tasks", api_list_tasks, methods=["GET"]),
     Route("/api/tasks", api_add_task, methods=["POST"]),
     Route("/api/tasks/reorder", api_reorder_tasks, methods=["POST"]),

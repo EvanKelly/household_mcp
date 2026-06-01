@@ -86,6 +86,7 @@ def _init_db() -> None:
             completed_by TEXT,
             sort_order INTEGER NOT NULL DEFAULT 0,
             next_due TEXT,
+            category TEXT,
             created_at TEXT NOT NULL
         )
     """)
@@ -120,6 +121,7 @@ def _init_db() -> None:
         "cadence_unit TEXT",
         "scheduled_days TEXT",
         "next_due TEXT",
+        "category TEXT",
     ):
         try:
             conn.execute(f"ALTER TABLE tasks ADD COLUMN {col_def}")
@@ -134,9 +136,14 @@ def _init_db() -> None:
             task_id TEXT NOT NULL,
             task_title TEXT NOT NULL,
             completed_at TEXT NOT NULL,
-            completed_by TEXT
+            completed_by TEXT,
+            note TEXT
         )
     """)
+    try:
+        conn.execute("ALTER TABLE task_completions ADD COLUMN note TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     # Packing list tables
     conn.execute("""
@@ -309,7 +316,7 @@ def _cadence_label(cadence_value, cadence_unit, scheduled_days=None) -> str:
     return f"every {cadence_value} {unit}"
 
 
-def _format_task(row: sqlite3.Row) -> dict:
+def _format_task(row: sqlite3.Row, completion_notes: list | None = None) -> dict:
     status = _task_status(row)
     cadence_value = int(row["cadence_value"]) if row["cadence_value"] is not None else None
     cadence_unit = row["cadence_unit"]
@@ -327,6 +334,8 @@ def _format_task(row: sqlite3.Row) -> dict:
         "completed_by": row["completed_by"],
         "sort_order": row["sort_order"],
         "next_due": row["next_due"],
+        "category": row["category"] or None,
+        "completion_notes": completion_notes or [],
         "created_at": row["created_at"],
     }
 
