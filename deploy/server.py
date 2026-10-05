@@ -64,6 +64,33 @@ async def api_list_categories(request: Request) -> JSONResponse:
     return JSONResponse([r[0] for r in rows])
 
 
+async def api_add_feedback(request: Request) -> JSONResponse:
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"error": "text is required"}, status_code=400)
+    fb_id = str(uuid.uuid4())[:8]
+    conn = _get_db()
+    conn.execute(
+        "INSERT INTO feedback (id, text, created_at) VALUES (?, ?, ?)",
+        (fb_id, text, _now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    return JSONResponse({"id": fb_id}, status_code=201)
+
+
+async def api_list_feedback(request: Request) -> JSONResponse:
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT id, text, created_at FROM feedback ORDER BY created_at DESC"
+    ).fetchall()
+    conn.close()
+    return JSONResponse([
+        {"id": r["id"], "text": r["text"], "created_at": r["created_at"]} for r in rows
+    ])
+
+
 async def api_list_tasks(request: Request) -> JSONResponse:
     conn = _get_db()
     rows = conn.execute("SELECT * FROM tasks ORDER BY title").fetchall()
@@ -494,6 +521,8 @@ custom_routes = [
     Route("/", head_root, methods=["HEAD"]),
     Route("/ui", serve_index, methods=["GET"]),
     Route("/api/categories", api_list_categories, methods=["GET"]),
+    Route("/api/feedback", api_list_feedback, methods=["GET"]),
+    Route("/api/feedback", api_add_feedback, methods=["POST"]),
     Route("/api/tasks", api_list_tasks, methods=["GET"]),
     Route("/api/tasks", api_add_task, methods=["POST"]),
     Route("/api/tasks/reorder", api_reorder_tasks, methods=["POST"]),

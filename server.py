@@ -145,6 +145,15 @@ def _init_db() -> None:
     except sqlite3.OperationalError:
         pass
 
+    # Feedback / feature requests submitted from the web UI
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS feedback (
+            id TEXT PRIMARY KEY,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+
     # Packing list tables
     conn.execute("""
         CREATE TABLE IF NOT EXISTS packing_bags (

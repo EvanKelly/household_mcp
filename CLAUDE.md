@@ -36,6 +36,9 @@ History log of completions: `task_id`, `task_title`, `completed_at`, `completed_
 ### `packing_bags`
 `id`, `name`, `sort_order`.
 
+### `feedback`
+User-submitted feature requests / bug reports from the UI: `id`, `text`, `created_at`.
+
 ## Task Status Logic
 
 Computed dynamically (not stored) by `_task_status()` in `server.py`:
@@ -55,6 +58,8 @@ Rules (simplified):
 | Method | Path | Action |
 |---|---|---|
 | GET | `/api/categories` | List distinct category values (sorted) |
+| GET | `/api/feedback` | List submitted feedback (newest first) |
+| POST | `/api/feedback` | Submit feedback (`{ text: "..." }`) |
 | GET | `/api/tasks` | List all tasks (with computed status) |
 | POST | `/api/tasks` | Add task |
 | POST | `/api/tasks/reorder` | Reorder one-time tasks (`{ task_ids: [...] }`) |

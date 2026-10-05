@@ -267,6 +267,40 @@
   .day-btn.selected { background: #1976d2; color: #fff; border-color: #1976d2; }
 
   /* Who did it? picker */
+  /* --- Search overlay --- */
+  .search-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: #f5f5f5;
+    z-index: 55;
+    flex-direction: column;
+  }
+  .search-overlay.open { display: flex; }
+  /* Who-did-it modal must sit above the search overlay */
+  #whoOverlay { z-index: 60; }
+  .search-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 14px 16px; background: #fff;
+    border-bottom: 1px solid #e2e2e2;
+  }
+  .search-head input {
+    flex: 1; padding: 10px 12px; border: 1px solid #ccc;
+    border-radius: 8px; font-size: 1em; font-family: inherit;
+  }
+  .search-head .btn-clear { padding: 10px 12px; }
+  .search-results {
+    flex: 1; overflow-y: auto; padding: 12px 16px;
+    max-width: 600px; width: 100%; margin: 0 auto;
+  }
+  .search-status {
+    display: inline-block; font-size: 0.72em; font-weight: 600;
+    padding: 2px 7px; border-radius: 10px; margin-left: 6px;
+    vertical-align: middle;
+  }
+  .search-status.st-todo     { background: #ffebee; color: #c62828; }
+  .search-status.st-complete { background: #e8f5e9; color: #2e7d32; }
+  .search-status.st-upcoming { background: #e3f2fd; color: #1565c0; }
+
   .who-buttons { display: flex; gap: 12px; margin-top: 8px; }
   .btn-who {
     flex: 1; padding: 18px 12px; font-size: 1.2em; font-weight: 700;
@@ -368,6 +402,8 @@
 <div id="view-household">
   <div style="display:flex;align-items:center;padding:12px 16px 0">
     <h1 style="flex:1;font-size:1.2em;font-weight:700">Household Tasks</h1>
+    <button id="searchBtn" style="background:none;border:none;font-size:1.3em;cursor:pointer;padding:2px 6px" onclick="openSearch()" title="Find &amp; complete a task">🔍</button>
+    <button id="feedbackBtn" style="background:none;border:none;font-size:1.3em;cursor:pointer;padding:2px 6px" onclick="openFeedback()" title="Send a feature request or bug report">💡</button>
     <button id="fsBtn" style="background:none;border:none;font-size:1.3em;cursor:pointer;padding:2px 6px" onclick="toggleFullscreen()" title="Fullscreen">⛶</button>
   </div>
   <div id="app"><div class="empty">Loading…</div></div>
@@ -402,7 +438,7 @@
 <!-- Packing tab content -->
 <div id="view-packing" style="display:none;">
   <div class="filter-bar">
-    <input type="text" id="pSearch" placeholder="Search packing items…" oninput="renderPacking()">
+    <input type="text" id="pSearch" placeholder="Search packing items…" oninput="renderPacking()" autocomplete="off" autocorrect="off" data-lpignore="true" data-1p-ignore>
     <div class="filter-row">
       <select id="pSort" onchange="renderPacking()">
         <option value="status">Sort: Status</option>
@@ -424,6 +460,29 @@
 
 <!-- Floating tooltip for calendar chips -->
 <div id="calTooltip"></div>
+
+<!-- Search & complete overlay -->
+<div class="search-overlay" id="searchOverlay">
+  <div class="search-head">
+    <input type="text" id="searchInput" placeholder="Search a task to complete…" oninput="renderSearchResults()"
+      autocomplete="off" autocorrect="off" data-lpignore="true" data-1p-ignore>
+    <button class="btn-clear" onclick="closeSearch()">Close</button>
+  </div>
+  <div class="search-results" id="searchResults"></div>
+</div>
+
+<!-- Feedback / feature request modal -->
+<div class="form-overlay" id="feedbackOverlay">
+  <div class="form-box">
+    <h2>Feature request / bug</h2>
+    <label for="feedbackText">What's on your mind?</label>
+    <textarea id="feedbackText" placeholder="Describe the feature you'd like or the bug you hit…" rows="4" style="-webkit-user-select:text;user-select:text"></textarea>
+    <div class="form-actions">
+      <button class="btn btn-cancel" onclick="closeFeedback()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitFeedback()">Submit</button>
+    </div>
+  </div>
+</div>
 
 <!-- Who did it? modal -->
 <div class="form-overlay" id="whoOverlay">
@@ -455,7 +514,7 @@
     <h2 id="formTitle">Add Task</h2>
     <input type="hidden" id="editId">
     <label for="fTitle">Title</label>
-    <input type="text" id="fTitle" placeholder="e.g. Clean bathroom">
+    <input type="text" id="fTitle" placeholder="e.g. Clean bathroom" autocomplete="off" autocorrect="off" data-lpignore="true" data-1p-ignore>
     <label for="fCadenceType">Repeat</label>
     <select id="fCadenceType" onchange="toggleCadenceInputs()">
       <option value="once">Once (no repeat)</option>
@@ -464,7 +523,7 @@
     <div id="cadenceInputRow" style="display:none; margin-top:8px;">
       <label>Every</label>
       <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
-        <input type="number" id="fCadenceValue" min="1" value="1" style="width:72px; padding:8px 10px; border:1px solid #ccc; border-radius:6px; font-size:0.95em;">
+        <input type="number" id="fCadenceValue" min="1" value="1" autocomplete="off" data-lpignore="true" data-1p-ignore style="width:72px; padding:8px 10px; border:1px solid #ccc; border-radius:6px; font-size:0.95em;">
         <select id="fCadenceUnit" style="flex:1; padding:8px 10px; border:1px solid #ccc; border-radius:6px; font-size:0.95em; font-family:inherit;" onchange="toggleDayPicker()">
           <option value="days">Days</option>
           <option value="weeks" selected>Weeks</option>
@@ -486,14 +545,14 @@
     </div>
     <div id="nextDueRow" style="margin-top:10px;">
       <label for="fNextDue">Next due date <span style="font-weight:400;color:#888">(optional)</span></label>
-      <input type="date" id="fNextDue">
+      <input type="date" id="fNextDue" autocomplete="off" data-lpignore="true" data-1p-ignore>
     </div>
     <label for="fCategory">Category <span style="font-weight:400;color:#888">(optional)</span></label>
     <select id="fCategory" onchange="onCategoryChange()" style="width:100%;padding:8px 10px;border:1px solid #ccc;border-radius:6px;font-size:0.95em;font-family:inherit;background:#fff;">
       <option value="">No category</option>
       <option value="__new__">+ Create new category…</option>
     </select>
-    <input type="text" id="fCategoryNew" placeholder="New category name" style="display:none;margin-top:6px;width:100%;padding:8px 10px;border:1px solid #ccc;border-radius:6px;font-size:0.95em;font-family:inherit;">
+    <input type="text" id="fCategoryNew" placeholder="New category name" autocomplete="off" autocorrect="off" data-lpignore="true" data-1p-ignore style="display:none;margin-top:6px;width:100%;padding:8px 10px;border:1px solid #ccc;border-radius:6px;font-size:0.95em;font-family:inherit;">
     <label for="fNotes">Notes</label>
     <textarea id="fNotes" placeholder="Optional details…"></textarea>
     <div class="form-actions">
@@ -509,7 +568,7 @@
     <h2 id="packFormTitle">Add Packing Item</h2>
     <input type="hidden" id="packEditId">
     <label for="pfTitle">Title</label>
-    <input type="text" id="pfTitle" placeholder="e.g. Sunscreen">
+    <input type="text" id="pfTitle" placeholder="e.g. Sunscreen" autocomplete="off" autocorrect="off" data-lpignore="true" data-1p-ignore>
     <label for="pfStatus">Status</label>
     <select id="pfStatus">
       <option value="Need">Need</option>
@@ -621,6 +680,101 @@ function render(tasks) {
   const dragList = document.getElementById('drag-todo-once');
   if (dragList) initDrag(dragList);
 }
+
+// ============================================================
+// SEARCH & COMPLETE
+// ============================================================
+let searchTasks = [];
+
+async function openSearch() {
+  const res = await fetch(API + '/tasks');
+  searchTasks = await res.json();
+  document.getElementById('searchInput').value = '';
+  renderSearchResults();
+  document.getElementById('searchOverlay').classList.add('open');
+  setTimeout(() => document.getElementById('searchInput').focus(), 50);
+}
+
+function closeSearch() {
+  document.getElementById('searchOverlay').classList.remove('open');
+}
+
+async function refreshSearch() {
+  if (!document.getElementById('searchOverlay').classList.contains('open')) return;
+  const res = await fetch(API + '/tasks');
+  searchTasks = await res.json();
+  renderSearchResults();
+}
+
+function renderSearchResults() {
+  const q = document.getElementById('searchInput').value.trim().toLowerCase();
+  const box = document.getElementById('searchResults');
+
+  if (!q) {
+    box.innerHTML = '<div class="empty">Type a task name to find and complete it.</div>';
+    return;
+  }
+
+  const matches = searchTasks
+    .filter(t => t.title.toLowerCase().includes(q) || (t.category && t.category.toLowerCase().includes(q)))
+    .sort((a, b) => a.title.localeCompare(b.title));
+
+  if (!matches.length) {
+    box.innerHTML = '<div class="empty">No tasks match "' + esc(q) + '".</div>';
+    return;
+  }
+
+  const statusClass = { 'To Do': 'st-todo', 'Complete': 'st-complete', 'Upcoming': 'st-upcoming' };
+  box.innerHTML = matches.map(t => {
+    const sc = statusClass[t.status] || '';
+    const badge = `<span class="search-status ${sc}">${esc(t.status)}</span>`;
+    const categoryPill = t.category ? `<span class="category-pill">${esc(t.category)}</span>` : '';
+    const lastDone = t.last_completed ? t.last_completed.slice(0, 10) : 'never';
+    const byBit = t.completed_by ? ` by ${esc(t.completed_by)}` : '';
+    const meta = t.cadence_value
+      ? `${esc(t.cadence)} · last: ${lastDone}${byBit}`
+      : (t.next_due ? `due: ${t.next_due}` : 'once');
+    return `
+      <div class="task" data-id="${t.id}">
+        <div class="task-body">
+          <div class="task-title">${esc(t.title)}${categoryPill}${badge}</div>
+          <div class="task-meta">${meta}</div>
+        </div>
+        <div class="task-actions">
+          <button class="btn btn-done" onclick="completeTask('${t.id}')">Done</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+// ============================================================
+// FEEDBACK / FEATURE REQUESTS
+// ============================================================
+function openFeedback() {
+  document.getElementById('feedbackText').value = '';
+  document.getElementById('feedbackOverlay').classList.add('open');
+  setTimeout(() => document.getElementById('feedbackText').focus(), 50);
+}
+
+function closeFeedback() {
+  document.getElementById('feedbackOverlay').classList.remove('open');
+}
+
+async function submitFeedback() {
+  const text = document.getElementById('feedbackText').value.trim();
+  if (!text) { alert('Please enter some text first.'); return; }
+  await fetch(API + '/feedback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+  closeFeedback();
+  alert('Thanks! Your note was saved.');
+}
+
+document.getElementById('feedbackOverlay').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeFeedback();
+});
 
 async function loadRecurring() {
   const res = await fetch(API + '/tasks');
@@ -867,6 +1021,7 @@ async function submitComplete(person) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ completed_by: person, note }),
   });
+  refreshSearch();
   if (activeTab === 'recurring') loadRecurring();
   else loadTasks();
 }

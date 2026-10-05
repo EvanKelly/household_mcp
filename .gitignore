@@ -7,3 +7,4 @@ credentials.json
 token.json
 run-local.sh
 .fuse_hidden*
+DEPLOY.md
