@@ -1642,6 +1642,39 @@ document.addEventListener('fullscreenchange', () => {
   document.getElementById('fsBtn').textContent = document.fullscreenElement ? '✕' : '⛶';
 });
 
+// --- Keyboard-in-fullscreen workaround ---
+// Silk/Android float the keyboard's suggestion bar over the field when the page
+// is in the Fullscreen API. So: temporarily exit fullscreen while a text field is
+// focused (keyboard docks normally), then snap back in on the next button tap.
+let wasFullscreen = false;
+
+function isTextField(el) {
+  if (!el) return false;
+  if (el.tagName === 'TEXTAREA') return true;
+  if (el.tagName === 'INPUT') {
+    return ['text', 'number', 'search', 'date', 'email', 'tel'].includes(el.type);
+  }
+  return false;
+}
+
+document.addEventListener('focusin', e => {
+  if (isTextField(e.target) && document.fullscreenElement) {
+    wasFullscreen = true;
+    document.exitFullscreen().catch(() => {});
+  }
+});
+
+document.addEventListener('click', e => {
+  if (!wasFullscreen) return;
+  // Still moving between text fields — stay out of fullscreen so the keyboard keeps docking.
+  if (isTextField(e.target)) return;
+  // A non-field tap (Save/Cancel/Done/backdrop) — re-enter fullscreen on this user gesture.
+  wasFullscreen = false;
+  if (document.documentElement.requestFullscreen) {
+    document.documentElement.requestFullscreen().catch(() => {});
+  }
+});
+
 // --- Auto-refresh ---
 function refreshCurrentTab() {
   if (document.visibilityState !== 'visible') return;
