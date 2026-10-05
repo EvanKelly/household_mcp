@@ -510,6 +510,36 @@ async def serve_index(request: Request) -> HTMLResponse:
         return HTMLResponse(f.read())
 
 
+# PWA manifest + app icon so the UI can be installed to a tablet home screen
+# and run in standalone (chrome-less) mode, which docks the keyboard normally.
+WEB_MANIFEST = {
+    "name": "Household Tasks",
+    "short_name": "Household",
+    "start_url": "/ui",
+    "scope": "/",
+    "display": "standalone",
+    "orientation": "any",
+    "background_color": "#f5f5f5",
+    "theme_color": "#1976d2",
+    "icons": [
+        {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"},
+    ],
+}
+
+APP_ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#1976d2"/>
+  <path d="M256 104 L412 240 V412 H300 V300 H212 V412 H100 V240 Z" fill="#ffffff"/>
+</svg>"""
+
+
+async def serve_manifest(request: Request) -> JSONResponse:
+    return JSONResponse(WEB_MANIFEST, media_type="application/manifest+json")
+
+
+async def serve_icon(request: Request) -> Response:
+    return Response(APP_ICON_SVG, media_type="image/svg+xml")
+
+
 # ---------------------------------------------------------------------------
 # Build the app
 # ---------------------------------------------------------------------------
@@ -520,6 +550,8 @@ app = mcp.http_app(path="/")
 custom_routes = [
     Route("/", head_root, methods=["HEAD"]),
     Route("/ui", serve_index, methods=["GET"]),
+    Route("/manifest.webmanifest", serve_manifest, methods=["GET"]),
+    Route("/icon.svg", serve_icon, methods=["GET"]),
     Route("/api/categories", api_list_categories, methods=["GET"]),
     Route("/api/feedback", api_list_feedback, methods=["GET"]),
     Route("/api/feedback", api_add_feedback, methods=["POST"]),
